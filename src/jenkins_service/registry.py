@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from .models import (
+    AuditRecord,
     Build,
     CancelRequest,
     ContractValidation,
@@ -25,6 +26,7 @@ from .models import (
     Scope,
     ServiceCapabilities,
     TriggerRequest,
+    WebhookDelivery,
 )
 from .store import ConflictError, NotFoundError
 
@@ -265,7 +267,7 @@ OPERATIONS: tuple[Operation, ...] = (
         Scope.READ,
         Exposure.RESOURCE,
         "GitHub webhook delivery audit",
-        response_model=list[dict[str, Any]],
+        response_model=list[WebhookDelivery],
         mcp_uri="jenkinsservice://webhooks/deliveries",
     ),
     Operation(
@@ -276,7 +278,7 @@ OPERATIONS: tuple[Operation, ...] = (
         Scope.ADMIN,
         Exposure.RESOURCE,
         "Security audit records",
-        response_model=list[dict[str, Any]],
+        response_model=list[AuditRecord],
         mcp_uri="jenkinsservice://audit",
     ),
 )

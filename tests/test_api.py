@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from jenkins_service.app import create_app
 from jenkins_service.models import RepositoryCreate, Scope
-from jenkins_service.webhook import dispatch_github_webhook
+from jenkins_service.webhook import dispatch_github_webhook, process_github_webhook
 
 
 def test_health_auth_scope_and_repository_flow(settings, store, service, authenticator) -> None:
@@ -143,6 +143,73 @@ async def test_webhook_dispatch_uses_operate_scope(
     assert principals[0].scopes == {Scope.OPERATE}
 
 
+async def test_webhook_dispatch_ignores_malformed_payload_shapes(
+    store,
+    service,
+    monkeypatch,
+) -> None:
+    await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    triggered = []
+
+    async def capture_trigger(principal, payload) -> None:
+        triggered.append((principal, payload))
+
+    monkeypatch.setattr(service, "trigger_pipeline", capture_trigger)
+    malformed = [
+        ("push", {}),
+        ("push", {"repository": [], "after": "a" * 40}),
+        (
+            "push",
+            {
+                "repository": {"full_name": "allowed/project"},
+                "after": 123,
+            },
+        ),
+        (
+            "pull_request",
+            {
+                "repository": {"full_name": "allowed/project"},
+                "action": "opened",
+                "pull_request": {},
+            },
+        ),
+        (
+            "pull_request",
+            {
+                "repository": {"full_name": "allowed/project"},
+                "action": "opened",
+                "pull_request": {
+                    "head": {"sha": "a" * 40},
+                    "number": "1",
+                },
+            },
+        ),
+    ]
+
+    for event, payload in malformed:
+        await dispatch_github_webhook(service, event, payload)
+
+    assert triggered == []
+
+
+async def test_webhook_processing_rejects_malformed_repository_shape(
+    store,
+    service,
+) -> None:
+    delivery, inserted = await process_github_webhook(
+        service,
+        "malformed-delivery",
+        "push",
+        {"repository": []},
+    )
+
+    assert inserted
+    assert not delivery.accepted
+    assert delivery.repository == "unknown"
+
+
 def test_webhook_signature_dedup_and_dispatch(settings, store, service, authenticator) -> None:
     app = create_app(
         settings=settings,
@@ -254,3 +321,25 @@ def test_openapi_contains_registry_not_raw_jenkins(settings, store, service, aut
     assert "/api/v1/pipelines/trigger" in paths
     assert "/api/v1/extensions/run" in paths
     assert all("script" not in path and "credential" not in path for path in paths)
+
+
+def test_openapi_uses_concrete_audit_response_models(
+    settings,
+    store,
+    service,
+    authenticator,
+) -> None:
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    paths = app.openapi()["paths"]
+    deliveries = paths["/api/v1/webhooks/deliveries"]["get"]["responses"]["200"]
+    audits = paths["/api/v1/audit"]["get"]["responses"]["200"]
+
+    delivery_items = deliveries["content"]["application/json"]["schema"]["items"]
+    audit_items = audits["content"]["application/json"]["schema"]["items"]
+    assert delivery_items["$ref"].endswith("/WebhookDelivery")
+    assert audit_items["$ref"].endswith("/AuditRecord")
