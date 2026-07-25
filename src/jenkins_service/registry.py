@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -351,6 +352,11 @@ class OperationRegistry:
                     dict(request.path_params),
                     dict(request.query_params),
                 )
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="invalid JSON payload",
+                ) from exc
             except ValidationError as exc:
                 raise HTTPException(status_code=422, detail=exc.errors()) from exc
             except NotFoundError as exc:

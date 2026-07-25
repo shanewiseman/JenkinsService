@@ -41,7 +41,7 @@ async def dispatch_github_webhook(
     )
     if repository is None:
         return
-    principal = Principal(token_id="github-webhook", scopes={Scope.ADMIN})
+    principal = Principal(token_id="github-webhook", scopes={Scope.OPERATE})
     if event == "push":
         commit_sha = payload.get("after")
         if commit_sha and commit_sha != "0" * 40:

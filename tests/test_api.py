@@ -7,6 +7,8 @@ import json
 from fastapi.testclient import TestClient
 
 from jenkins_service.app import create_app
+from jenkins_service.models import RepositoryCreate, Scope
+from jenkins_service.webhook import dispatch_github_webhook
 
 
 def test_health_auth_scope_and_repository_flow(settings, store, service, authenticator) -> None:
@@ -86,6 +88,59 @@ def test_operation_requests_reject_unknown_fields(settings, store, service, auth
             json={"owner": "allowed", "name": "project", "unexpected": True},
         )
     assert response.status_code == 422
+
+
+def test_operation_requests_return_stable_error_for_invalid_json(
+    settings,
+    store,
+    service,
+    authenticator,
+) -> None:
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/repositories",
+            headers={
+                "Authorization": "Bearer operate-token",
+                "Content-Type": "application/json",
+            },
+            content="{",
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid JSON payload"}
+
+
+async def test_webhook_dispatch_uses_operate_scope(
+    store,
+    service,
+    monkeypatch,
+) -> None:
+    await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    principals = []
+
+    async def capture_trigger(principal, payload) -> None:
+        principals.append(principal)
+
+    monkeypatch.setattr(service, "trigger_pipeline", capture_trigger)
+    await dispatch_github_webhook(
+        service,
+        "push",
+        {
+            "after": "a" * 40,
+            "repository": {"full_name": "allowed/project"},
+        },
+    )
+
+    assert len(principals) == 1
+    assert principals[0].scopes == {Scope.OPERATE}
 
 
 def test_webhook_signature_dedup_and_dispatch(settings, store, service, authenticator) -> None:
