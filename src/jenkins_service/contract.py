@@ -19,6 +19,17 @@ IMAGE_DIGEST = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:+-]*@sha256:[a-f0-9]{64}$"
 SECRET_NAME = re.compile(
     r"(?i)(secret|token|password|passwd|credential|private[_-]?key|api[_-]?key)"
 )
+FORBIDDEN_ENVIRONMENT_NAMES = frozenset(
+    {
+        "BUILDKIT_HOST",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+    }
+)
 FORBIDDEN_COMMAND_FRAGMENTS = (
     "/var/run/docker.sock",
     "docker.sock",
@@ -42,6 +53,20 @@ def _relative_safe_path(value: str, field: str, errors: list[str]) -> None:
         errors.append(f"{field} must be a relative POSIX path without '..'")
 
 
+def _environment_errors(
+    environment: dict[Any, Any],
+    field: str,
+    errors: list[str],
+) -> None:
+    for name in environment:
+        if not isinstance(name, str):
+            continue
+        if SECRET_NAME.search(name):
+            errors.append(f"{field}.{name}: secret-like names are forbidden")
+        if name.upper() in FORBIDDEN_ENVIRONMENT_NAMES:
+            errors.append(f"{field}.{name}: Docker client configuration is forbidden")
+
+
 def _semantic_errors(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     runtime_value = document.get("runtime", {})
@@ -52,9 +77,7 @@ def _semantic_errors(document: dict[str, Any]) -> list[str]:
 
     environment_value = runtime.get("environment", {})
     environment = environment_value if isinstance(environment_value, dict) else {}
-    for name in environment:
-        if isinstance(name, str) and SECRET_NAME.search(name):
-            errors.append(f"runtime.environment.{name}: secret-like names are forbidden")
+    _environment_errors(environment, "runtime.environment", errors)
 
     seen: set[str] = set()
     groups = ("standards", "tests", "custom")
@@ -96,9 +119,11 @@ def _semantic_errors(document: dict[str, Any]) -> list[str]:
                 if isinstance(step_environment_value, dict)
                 else {}
             )
-            for name in step_environment:
-                if isinstance(name, str) and SECRET_NAME.search(name):
-                    errors.append(f"{prefix}.environment.{name}: secret-like names are forbidden")
+            _environment_errors(
+                step_environment,
+                f"{prefix}.environment",
+                errors,
+            )
             reports_value = step.get("reports", [])
             reports = reports_value if isinstance(reports_value, list) else []
             for report_index, report in enumerate(reports):

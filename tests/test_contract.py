@@ -54,6 +54,22 @@ def test_paths_secrets_mounts_and_duplicate_ids_are_rejected() -> None:
     assert "forbidden fragment" in combined
 
 
+def test_docker_client_environment_is_rejected_at_runtime_and_step_levels() -> None:
+    document = yaml.safe_load((ROOT / "examples/pipeline.yaml").read_text())
+    document["runtime"]["environment"]["DOCKER_HOST"] = "tcp://docker:2376"
+    document["steps"]["tests"][0].setdefault("environment", {})[
+        "DOCKER_TLS_VERIFY"
+    ] = "1"
+
+    result = validate_contract_content(yaml.safe_dump(document))
+
+    assert not result.valid
+    combined = "\n".join(result.errors)
+    assert "runtime.environment.DOCKER_HOST" in combined
+    assert "steps.tests[0].environment.DOCKER_TLS_VERIFY" in combined
+    assert combined.count("Docker client configuration is forbidden") == 2
+
+
 def test_malformed_document_is_a_validation_result() -> None:
     result = validate_contract_content("steps: [")
     assert not result.valid

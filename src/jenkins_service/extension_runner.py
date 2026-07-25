@@ -94,7 +94,13 @@ def create_runner_app(
 
     @app.post("/internal/v1/run", response_model=ExtensionOutput)
     async def run_extension(request: RunRequest) -> ExtensionOutput:
-        canonical = catalog.get(request.manifest.id)
+        try:
+            canonical = catalog.get(request.manifest.id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="extension is not allowlisted",
+            ) from exc
         if request.manifest != canonical:
             raise HTTPException(status_code=400, detail="manifest does not match catalog")
         if request.action not in canonical.actions:

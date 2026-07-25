@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from jenkins_service.extension_runner import create_runner_app
 from jenkins_service.extensions import ExtensionCatalog
@@ -59,3 +61,28 @@ def test_explicit_empty_runner_allowlist_does_not_fall_back_to_environment(
     path = Path(__file__).parents[1] / "extensions"
     monkeypatch.setenv("EXTENSION_ALLOWLIST", "missing")
     assert create_runner_app(catalog_path=path, allowlist=set()) is not None
+
+
+def test_runner_returns_403_for_unallowlisted_extension() -> None:
+    path = Path(__file__).parents[1] / "extensions"
+    manifest = json.loads(
+        (path / "reference-review" / "manifest.json").read_text(encoding="utf-8")
+    )
+    manifest["id"] = "unknown-extension"
+    app = create_runner_app(
+        catalog_path=path,
+        allowlist={"reference-review"},
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/run",
+            json={
+                "manifest": manifest,
+                "action": "review",
+                "payload": {},
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "extension is not allowlisted"}
