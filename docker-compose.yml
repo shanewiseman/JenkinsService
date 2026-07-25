@@ -60,7 +60,6 @@ services:
       - jenkins_admin_password
       - jenkins_api_token
       - github_read_pat
-      - github_webhook_secret
     volumes:
       - jenkins-data:/var/jenkins_home
     ports:
@@ -196,7 +195,6 @@ services:
       - postgres_password
       - jenkins_api_token
       - api_tokens
-      - github_read_pat
       - github_write_pat
       - github_webhook_secret
     ports:

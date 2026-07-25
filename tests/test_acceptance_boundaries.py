@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
+
 from jenkins_service.app import create_app
 from jenkins_service.config import Settings
 from jenkins_service.models import (
@@ -10,6 +14,8 @@ from jenkins_service.models import (
     Scope,
 )
 from jenkins_service.security import Redactor
+
+ROOT = Path(__file__).parents[1]
 
 
 def test_openapi_contains_operation_input_schemas(
@@ -41,6 +47,17 @@ def test_database_password_is_url_encoded(tmp_path) -> None:
         database_password_file=password_file,
     )
     assert settings.postgres_dsn().endswith("password=a%2Bb%26c%3Fd")
+
+
+def test_compose_mounts_github_secrets_only_where_used() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    jenkins_secrets = set(compose["services"]["jenkins"]["secrets"])
+    gateway_secrets = set(compose["services"]["gateway"]["secrets"])
+
+    assert "github_read_pat" in jenkins_secrets
+    assert "github_webhook_secret" not in jenkins_secrets
+    assert "github_read_pat" not in gateway_secrets
+    assert {"github_write_pat", "github_webhook_secret"} <= gateway_secrets
 
 
 async def test_progressive_logs_are_redacted(
