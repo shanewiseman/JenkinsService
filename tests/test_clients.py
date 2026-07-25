@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
-from jenkins_service.clients import GitHubClient, JenkinsClient
+from jenkins_service.clients import GitHubClient, JenkinsClient, UpstreamError
 
 
 async def test_jenkins_trigger_uses_crumb_and_returns_queue_id() -> None:
@@ -24,6 +25,19 @@ async def test_jenkins_trigger_uses_crumb_and_returns_queue_id() -> None:
     assert queue_id == 123
     assert requests[-1].headers["jenkins-crumb"] == "crumb"
     assert requests[-1].url.path.endswith("/buildWithParameters")
+
+
+async def test_jenkins_trigger_rejects_missing_queue_location() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/crumbIssuer/api/json":
+            return httpx.Response(404)
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = JenkinsClient("http://jenkins", "user", "token", http)
+        with pytest.raises(UpstreamError, match="queue item location"):
+            await client.trigger("owner", "repo", "a" * 40, None)
 
 
 async def test_jenkins_job_uses_configured_enterprise_checkout_url() -> None:
@@ -84,8 +98,6 @@ async def test_github_client_enforces_declared_actions() -> None:
             {"issue_comment"},
         )
         assert response["id"] == 7
-
-        import pytest
 
         with pytest.raises(ValueError, match="not allowed"):
             await client.execute_action(

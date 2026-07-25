@@ -134,7 +134,7 @@ class JenkinsClient:
 
     async def trigger(
         self, owner: str, name: str, commit_sha: str, pull_request: int | None
-    ) -> int | None:
+    ) -> int:
         encoded = quote(self.job_name(owner, name), safe="")
         response = await self._post(
             f"/job/repositories/job/{encoded}/buildWithParameters",
@@ -147,7 +147,9 @@ class JenkinsClient:
         try:
             return int(location.rsplit("/", 1)[1])
         except (ValueError, IndexError):
-            return None
+            raise UpstreamError(
+                "Jenkins did not return a valid queue item location"
+            ) from None
 
     async def cancel(self, job: str, build_number: int) -> None:
         encoded = self._job_path(job)

@@ -44,42 +44,75 @@ def _relative_safe_path(value: str, field: str, errors: list[str]) -> None:
 
 def _semantic_errors(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    runtime = document.get("runtime", {})
+    runtime_value = document.get("runtime", {})
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
     image = runtime.get("image", "")
-    if image and not IMAGE_DIGEST.fullmatch(image):
+    if isinstance(image, str) and image and not IMAGE_DIGEST.fullmatch(image):
         errors.append("runtime.image must use an immutable @sha256 digest")
 
-    environment = runtime.get("environment", {})
+    environment_value = runtime.get("environment", {})
+    environment = environment_value if isinstance(environment_value, dict) else {}
     for name in environment:
-        if SECRET_NAME.search(name):
+        if isinstance(name, str) and SECRET_NAME.search(name):
             errors.append(f"runtime.environment.{name}: secret-like names are forbidden")
 
     seen: set[str] = set()
     groups = ("standards", "tests", "custom")
+    steps_value = document.get("steps", {})
+    steps = steps_value if isinstance(steps_value, dict) else {}
     for group in groups:
-        for index, step in enumerate(document.get("steps", {}).get(group, [])):
+        group_value = steps.get(group, [])
+        group_steps = group_value if isinstance(group_value, list) else []
+        for index, step in enumerate(group_steps):
             prefix = f"steps.{group}[{index}]"
+            if not isinstance(step, dict):
+                continue
             step_id = step.get("id")
-            if step_id in seen:
+            if isinstance(step_id, str) and step_id in seen:
                 errors.append(f"{prefix}.id duplicates step ID {step_id!r}")
-            elif step_id:
+            elif isinstance(step_id, str) and step_id:
                 seen.add(step_id)
             working_directory = step.get("workingDirectory", ".")
-            _relative_safe_path(working_directory, f"{prefix}.workingDirectory", errors)
+            if isinstance(working_directory, str):
+                _relative_safe_path(
+                    working_directory,
+                    f"{prefix}.workingDirectory",
+                    errors,
+                )
             command = step.get("command", [])
-            command_text = command if isinstance(command, str) else " ".join(command)
+            command_text = (
+                command
+                if isinstance(command, str)
+                else " ".join(item for item in command if isinstance(item, str))
+                if isinstance(command, list)
+                else ""
+            )
             for fragment in FORBIDDEN_COMMAND_FRAGMENTS:
                 if fragment.lower() in command_text.lower():
                     errors.append(f"{prefix}.command contains forbidden fragment {fragment!r}")
-            for name in step.get("environment", {}):
-                if SECRET_NAME.search(name):
+            step_environment_value = step.get("environment", {})
+            step_environment = (
+                step_environment_value
+                if isinstance(step_environment_value, dict)
+                else {}
+            )
+            for name in step_environment:
+                if isinstance(name, str) and SECRET_NAME.search(name):
                     errors.append(f"{prefix}.environment.{name}: secret-like names are forbidden")
-            for report_index, report in enumerate(step.get("reports", [])):
-                _relative_safe_path(
-                    report["path"], f"{prefix}.reports[{report_index}].path", errors
-                )
-    for index, artifact in enumerate(document.get("artifacts", [])):
-        _relative_safe_path(artifact["path"], f"artifacts[{index}].path", errors)
+            reports_value = step.get("reports", [])
+            reports = reports_value if isinstance(reports_value, list) else []
+            for report_index, report in enumerate(reports):
+                if isinstance(report, dict) and isinstance(report.get("path"), str):
+                    _relative_safe_path(
+                        report["path"],
+                        f"{prefix}.reports[{report_index}].path",
+                        errors,
+                    )
+    artifacts_value = document.get("artifacts", [])
+    artifacts = artifacts_value if isinstance(artifacts_value, list) else []
+    for index, artifact in enumerate(artifacts):
+        if isinstance(artifact, dict) and isinstance(artifact.get("path"), str):
+            _relative_safe_path(artifact["path"], f"artifacts[{index}].path", errors)
     return errors
 
 

@@ -27,11 +27,16 @@ def test_health_auth_scope_and_repository_flow(settings, store, service, authent
         assert forbidden.status_code == 403
         created = client.post(
             "/api/v1/repositories",
-            headers={"Authorization": "Bearer operate-token"},
+            headers={
+                "Authorization": "Bearer operate-token",
+                "X-Request-ID": "request-123",
+            },
             json={"owner": "allowed", "name": "project"},
         )
         assert created.status_code == 200, created.text
         assert created.json()["full_name"] == "allowed/project"
+        assert created.headers["X-Request-ID"] == "request-123"
+        assert store.audit[-1].request_id == "request-123"
         listed = client.get(
             "/api/v1/repositories",
             headers={"Authorization": "Bearer read-token"},

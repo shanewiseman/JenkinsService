@@ -30,6 +30,7 @@ from .models import (
     TriggerRequest,
     now_utc,
 )
+from .request_context import current_request_id
 from .security import Redactor
 from .store import NotFoundError, Store
 
@@ -82,10 +83,7 @@ class JenkinsService:
                 actor=principal.token_id,
                 action=action,
                 target=target,
-                request_id=(detail or {}).get(
-                    "request_id",
-                    "mcp-or-api",
-                ),
+                request_id=current_request_id.get(),
                 outcome=outcome,
                 detail=detail or {},
             )

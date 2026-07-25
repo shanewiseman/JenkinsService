@@ -58,3 +58,9 @@ def test_malformed_document_is_a_validation_result() -> None:
     result = validate_contract_content("steps: [")
     assert not result.valid
     assert result.errors[0].startswith("document parse failed")
+
+
+def test_structurally_invalid_document_skips_semantic_validation() -> None:
+    result = validate_contract_content("steps: []")
+    assert not result.valid
+    assert any(error.startswith("steps:") for error in result.errors)

@@ -15,7 +15,7 @@ from .config import Settings, get_settings
 from .extensions import ExtensionCatalog, ExtensionRunnerClient
 from .mcp_server import create_mcp_server
 from .registry import OperationRegistry
-from .request_context import current_principal
+from .request_context import current_principal, current_request_id
 from .security import (
     Redactor,
     SlidingWindowLimiter,
@@ -178,9 +178,11 @@ def create_app(
             request.state.principal = principal
             context_token = current_principal.set(principal)
 
+        request_id_token = current_request_id.set(request_id)
         try:
             response = await call_next(request)
         finally:
+            current_request_id.reset(request_id_token)
             if context_token is not None:
                 current_principal.reset(context_token)
         response.headers["X-Request-ID"] = request_id
