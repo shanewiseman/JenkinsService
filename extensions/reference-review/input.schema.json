@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["repository", "inputs"],
+  "properties": {
+    "repository": {"type": "object"},
+    "build_id": {"type": ["string", "null"]},
+    "inputs": {"type": "object"}
+  },
+  "additionalProperties": false
+}

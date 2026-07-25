@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.jenkinsservice.dev/schemas/pipeline-result-v1.schema.json",
+  "title": "JenkinsService PipelineResult v1",
+  "type": "object",
+  "required": ["schema_version", "repository", "commit_sha", "status", "checks", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "ci.jenkinsservice.dev/result/v1"},
+    "repository": {"type": "string"},
+    "commit_sha": {"type": "string", "pattern": "^[a-fA-F0-9]{40}$"},
+    "pull_request": {"type": ["integer", "null"], "minimum": 1},
+    "status": {"enum": ["queued", "running", "passed", "failed", "cancelled"]},
+    "started_at": {"type": ["string", "null"], "format": "date-time"},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"},
+    "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "extension_runs": {"type": "array", "items": {"type": "string", "format": "uuid"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "not": {
+        "anyOf": [
+          {"pattern": "^/"},
+          {"pattern": "(^|/)\\.\\.(/|$)"},
+          {"pattern": "\\\\"}
+        ]
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "status",
+        "required",
+        "duration_seconds",
+        "reports"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "status": {"enum": ["passed", "failed", "warning", "skipped"]},
+        "required": {"type": "boolean"},
+        "exit_code": {"type": ["integer", "null"]},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "reports": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/relativePath"}
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "sha256", "size"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/relativePath"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size": {"type": "integer", "minimum": 0},
+        "download_url": {
+          "type": ["string", "null"],
+          "format": "uri"
+        }
+      }
+    }
+  }
+}

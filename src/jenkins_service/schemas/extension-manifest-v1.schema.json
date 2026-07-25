@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.jenkinsservice.dev/schemas/extension-manifest-v1.schema.json",
+  "title": "JenkinsService Extension Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "image",
+    "compatible_contracts",
+    "actions",
+    "input_schema",
+    "output_schema"
+  ],
+  "properties": {
+    "schema_version": {"const": "ci.jenkinsservice.dev/extension/v1"},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"},
+    "image": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:+\\-]*@sha256:[a-f0-9]{64}$"
+    },
+    "compatible_contracts": {
+      "type": "array",
+      "contains": {"const": "ci.jenkinsservice.dev/v1"}
+    },
+    "actions": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "input_schema": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+\\.json$"
+    },
+    "output_schema": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+\\.json$"
+    },
+    "github_actions": {
+      "type": "array",
+      "items": {"enum": ["review_comment", "issue_comment", "check_run", "status"]}
+    },
+    "required_secrets": {"type": "array", "items": {"type": "string"}},
+    "network": {"const": "none"},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+    "memory_mb": {"type": "integer", "minimum": 64, "maximum": 4096},
+    "cpus": {"type": "number", "exclusiveMinimum": 0, "maximum": 4}
+  }
+}
