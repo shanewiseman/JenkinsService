@@ -19,6 +19,6 @@ docker compose exec -T postgres pg_restore \
 docker run --rm \
   --volume jenkins-service_jenkins-data:/target \
   --volume "$(cd "$source_directory" && pwd):/backup:ro" \
-  alpine:3.22.1 \
+  alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 \
   sh -eu -c 'find /target -mindepth 1 -delete; tar -C /target -xzf /backup/jenkins-home.tar.gz'
 docker compose up -d

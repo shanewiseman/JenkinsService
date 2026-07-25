@@ -177,8 +177,9 @@ PY
             }
         } finally {
             stage('Cleanup') {
+                String cleanupFilter = shellQuote("label=${buildLabel}")
                 sh(
-                    script: "docker ps -aq --filter 'label=${shellQuote(buildLabel)}' | xargs -r docker rm -f",
+                    script: "docker ps -aq --filter ${cleanupFilter} | xargs -r docker rm -f",
                     returnStatus: true
                 )
                 if (buildNetwork) {

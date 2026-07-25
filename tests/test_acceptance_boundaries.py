@@ -60,6 +60,27 @@ def test_compose_mounts_github_secrets_only_where_used() -> None:
     assert {"github_write_pat", "github_webhook_secret"} <= gateway_secrets
 
 
+def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:
+    pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
+        encoding="utf-8",
+    )
+
+    assert 'String cleanupFilter = shellQuote("label=${buildLabel}")' in pipeline
+    assert "docker ps -aq --filter ${cleanupFilter}" in pipeline
+    assert "--filter 'label=${shellQuote(buildLabel)}'" not in pipeline
+
+
+def test_backup_and_restore_helper_images_are_digest_pinned() -> None:
+    alpine_image = (
+        "alpine:3.22.1@sha256:"
+        "4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+    )
+
+    for script_name in ("backup.sh", "restore.sh"):
+        script = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert alpine_image in script
+
+
 async def test_progressive_logs_are_redacted(
     service,
     store,

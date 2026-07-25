@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from jenkins_service.models import (
     CancelRequest,
     ExtensionActionRequest,
@@ -146,3 +148,49 @@ async def test_extension_action_is_validated_audited_and_idempotent(
     actions = [record.action for record in await store.list_audit()]
     assert "github.issue_comment" in actions
     assert "run_extension_action" in actions
+
+
+async def test_extension_output_schema_is_enforced_before_github_actions(
+    service,
+    store,
+    monkeypatch,
+) -> None:
+    principal = Principal(
+        token_id="extension-operator",
+        scopes={Scope.EXTEND},
+    )
+    repository = await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    service.extension_runner.output = ExtensionOutput(
+        requested_github_actions=[
+            {
+                "type": "issue_comment",
+                "issue_number": 12,
+                "body": {"body": "review"},
+            }
+        ],
+    )
+    validated_outputs = []
+
+    def reject_output(extension_id, output) -> None:
+        validated_outputs.append((extension_id, output))
+        raise ValueError("extension output does not match schema")
+
+    monkeypatch.setattr(service.extension_catalog, "validate_output", reject_output)
+    request = ExtensionActionRequest(
+        extension_id="reference-review",
+        action="review",
+        repository_id=repository.id,
+        idempotency_key="schema-rejection",
+    )
+
+    with pytest.raises(ValueError, match="does not match schema"):
+        await service.run_extension_action(principal, request)
+
+    assert validated_outputs[0][0] == "reference-review"
+    assert validated_outputs[0][1]["requested_github_actions"]
+    assert service.github.actions == []
+    stored = await store.get_extension_run_by_key("schema-rejection")
+    assert stored is not None
+    assert stored.status == "failed"

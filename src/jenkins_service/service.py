@@ -522,6 +522,10 @@ class JenkinsService:
                     "inputs": payload.inputs,
                 },
             )
+            self.extension_catalog.validate_output(
+                manifest.id,
+                output.model_dump(mode="json"),
+            )
             for action_request in output.requested_github_actions:
                 action_type = action_request.get("type", "")
                 response = await self.github.execute_action(
