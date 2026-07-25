@@ -208,6 +208,17 @@ async def test_webhook_processing_rejects_malformed_repository_shape(
     assert inserted
     assert not delivery.accepted
     assert delivery.repository == "unknown"
+    assert delivery.reason == "malformed repository metadata"
+
+    outside, outside_inserted = await process_github_webhook(
+        service,
+        "outside-allowlist-delivery",
+        "push",
+        {"repository": {"full_name": "outside/project"}},
+    )
+    assert outside_inserted
+    assert not outside.accepted
+    assert outside.reason == "repository outside configured allowlist"
 
 
 def test_webhook_signature_dedup_and_dispatch(settings, store, service, authenticator) -> None:

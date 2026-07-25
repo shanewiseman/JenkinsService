@@ -59,3 +59,8 @@ def test_log_redaction() -> None:
 def test_log_redaction_without_capture_group() -> None:
     redactor = Redactor([r"secret-value"])
     assert redactor.redact("prefix secret-value suffix") == "prefix [REDACTED] suffix"
+
+
+def test_log_redaction_with_nonparticipating_optional_capture() -> None:
+    redactor = Redactor([r"(token=)?secret-value"])
+    assert redactor.redact("prefix secret-value suffix") == "prefix [REDACTED] suffix"

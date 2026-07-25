@@ -27,12 +27,19 @@ async def process_github_webhook(
 ) -> tuple[WebhookDelivery, bool]:
     repository_name = _repository_full_name(payload)
     allowed = repository_name is not None and service.repository_allowed(repository_name)
+    reason = (
+        None
+        if allowed
+        else "malformed repository metadata"
+        if repository_name is None
+        else "repository outside configured allowlist"
+    )
     delivery = WebhookDelivery(
         delivery_id=delivery_id,
         event=event,
         repository=repository_name or "unknown",
         accepted=allowed,
-        reason=None if allowed else "repository outside configured allowlist",
+        reason=reason,
     )
     inserted = await service.store.record_webhook_once(delivery)
     return delivery, inserted

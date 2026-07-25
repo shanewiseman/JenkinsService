@@ -81,6 +81,11 @@ def test_backup_and_restore_helper_images_are_digest_pinned() -> None:
         assert alpine_image in script
 
 
+def test_contract_validator_invokes_python3_explicitly() -> None:
+    script = (ROOT / "scripts/validate-contract.sh").read_text(encoding="utf-8")
+    assert 'exec python3 -m jenkins_service.contract "${1:-.jenkins/pipeline.yaml}"' in script
+
+
 async def test_progressive_logs_are_redacted(
     service,
     store,

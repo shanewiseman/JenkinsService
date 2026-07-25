@@ -105,7 +105,7 @@ class Redactor:
         for pattern in self.patterns:
             value = pattern.sub(
                 lambda match: (
-                    (match.group(1) if match.lastindex else "") + "[REDACTED]"
+                    ((match.group(1) or "") if match.lastindex else "") + "[REDACTED]"
                 ),
                 value,
             )
