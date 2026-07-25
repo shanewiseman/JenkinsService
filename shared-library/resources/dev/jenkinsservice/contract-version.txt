@@ -1,0 +1,1 @@
+ci.jenkinsservice.dev/v1

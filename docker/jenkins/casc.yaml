@@ -1,0 +1,79 @@
+jenkins:
+  systemMessage: "JenkinsService — configuration is managed by JCasC"
+  numExecutors: 0
+  mode: EXCLUSIVE
+  slaveAgentPort: 50000
+  disableRememberMe: true
+  markupFormatter:
+    plainText
+  crumbIssuer:
+    standard: {}
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_USER}"
+          password: "${file:/run/secrets/jenkins_admin_password}"
+        - id: "jenkinsservice"
+          password: "${file:/run/secrets/jenkins_api_token}"
+  authorizationStrategy:
+    globalMatrix:
+      entries:
+        - user:
+            name: "${JENKINS_ADMIN_USER}"
+            permissions:
+              - "Overall/Administer"
+        - user:
+            name: "jenkinsservice"
+            permissions:
+              - "Overall/Read"
+              - "Agent/Connect"
+              - "Agent/Build"
+              - "Job/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+  nodes:
+    - permanent:
+        name: "orchestrator"
+        labelString: "orchestrator"
+        mode: EXCLUSIVE
+        remoteFS: "/home/jenkins/agent"
+        numExecutors: ${JENKINS_AGENT_EXECUTORS:-4}
+        launcher:
+          inbound:
+            workDirSettings:
+              disabled: false
+              failIfWorkDirIsMissing: false
+              internalDir: "remoting"
+              workDirPath: "/home/jenkins/agent"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "github-read-pat"
+              secret: "${file:/run/secrets/github_read_pat}"
+              description: "Read-only GitHub discovery and checkout PAT"
+
+unclassified:
+  location:
+    url: "${JENKINS_PUBLIC_URL}"
+  globalLibraries:
+    libraries:
+      - name: "jenkins-service-contract"
+        defaultVersion: "v1"
+        implicit: false
+        allowVersionOverride: false
+        includeInChangesets: false
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "file:///usr/share/jenkins/ref/shared-library"
+                credentialsId: ""

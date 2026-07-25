@@ -1,0 +1,259 @@
+name: jenkins-service
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  docker:
+    image: docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659
+    privileged: true
+    command:
+      - --host=tcp://0.0.0.0:2376
+      - --host=unix:///var/run/docker.sock
+      - --storage-driver=overlay2
+      - --log-level=warn
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - docker-certs-ca:/certs/ca
+      - docker-certs-client:/certs/client
+      - docker-data:/var/lib/docker
+      - agent-workspace:/home/jenkins/agent
+    networks:
+      control:
+        aliases: [docker]
+      egress: {}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          docker --host tcp://localhost:2376
+          --tlsverify --tlscacert /certs/client/ca.pem
+          --tlscert /certs/client/cert.pem
+          --tlskey /certs/client/key.pem info
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *default-logging
+    restart: unless-stopped
+
+  jenkins:
+    build:
+      context: .
+      dockerfile: docker/jenkins/Dockerfile
+    image: jenkinsservice-controller:0.1.0
+    depends_on:
+      docker:
+        condition: service_healthy
+    environment:
+      CASC_JENKINS_CONFIG: /usr/share/jenkins/ref/casc.yaml
+      JAVA_OPTS: >-
+        -Djenkins.install.runSetupWizard=false
+        -Dhudson.model.DirectoryBrowserSupport.CSP=sandbox
+      JENKINS_ADMIN_USER: admin
+      JENKINS_PUBLIC_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}/jenkins/
+      JENKINS_AGENT_EXECUTORS: ${JENKINS_AGENT_EXECUTORS:-4}
+    secrets:
+      - jenkins_admin_password
+      - jenkins_api_token
+      - github_read_pat
+      - github_webhook_secret
+    volumes:
+      - jenkins-data:/var/jenkins_home
+    ports:
+      - "127.0.0.1:${JENKINS_PORT:-18080}:8080"
+    expose:
+      - "50000"
+    networks:
+      control: {}
+      egress: {}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl --fail --silent http://localhost:8080/login >/dev/null
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    logging: *default-logging
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/agent/Dockerfile
+    image: jenkinsservice-agent:0.1.0
+    depends_on:
+      docker:
+        condition: service_healthy
+      jenkins:
+        condition: service_healthy
+    environment:
+      JENKINS_URL: http://jenkins:8080
+      JENKINS_AGENT_NAME: orchestrator
+      DOCKER_HOST: tcp://docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+    secrets:
+      - jenkins_api_token
+    volumes:
+      - docker-certs-client:/certs/client:ro
+      - agent-workspace:/home/jenkins/agent
+    networks:
+      control: {}
+      egress: {}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    logging: *default-logging
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
+    environment:
+      POSTGRES_DB: jenkinsservice
+      POSTGRES_USER: jenkinsservice
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      database: {}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U jenkinsservice -d jenkinsservice
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *default-logging
+    restart: unless-stopped
+
+  extension-runner:
+    build:
+      context: .
+      dockerfile: docker/extension-runner/Dockerfile
+    image: jenkinsservice-extension-runner:0.1.0
+    depends_on:
+      docker:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+      EXTENSION_ALLOWLIST: ${EXTENSION_ALLOWLIST:-}
+      EXTENSION_CATALOG_PATH: /app/extensions
+    volumes:
+      - docker-certs-client:/certs/client:ro
+    networks:
+      control: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8090/healthz')
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1
+    logging: *default-logging
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jenkinsservice-gateway:0.1.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jenkins:
+        condition: service_healthy
+      extension-runner:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://jenkinsservice@postgres:5432/jenkinsservice
+      JENKINS_URL: http://jenkins:8080
+      EXTENSION_RUNNER_URL: http://extension-runner:8090
+    secrets:
+      - postgres_password
+      - jenkins_api_token
+      - api_tokens
+      - github_read_pat
+      - github_write_pat
+      - github_webhook_secret
+    ports:
+      - "127.0.0.1:${API_PORT:-18000}:8000"
+    networks:
+      control: {}
+      database: {}
+      egress: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8000/readyz')
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1
+    logging: *default-logging
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  jenkins_admin_password:
+    file: ./secrets/jenkins_admin_password
+  jenkins_api_token:
+    file: ./secrets/jenkins_api_token
+  api_tokens:
+    file: ./secrets/api_tokens
+  github_read_pat:
+    file: ./secrets/github_read_pat
+  github_write_pat:
+    file: ./secrets/github_write_pat
+  github_webhook_secret:
+    file: ./secrets/github_webhook_secret
+
+volumes:
+  docker-certs-ca:
+  docker-certs-client:
+  docker-data:
+  agent-workspace:
+  jenkins-data:
+  postgres-data:
+
+networks:
+  control:
+    internal: true
+  database:
+    internal: true
+  egress:

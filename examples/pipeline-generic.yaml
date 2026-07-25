@@ -1,0 +1,11 @@
+apiVersion: ci.jenkinsservice.dev/v1
+runtime:
+  image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+steps:
+  standards:
+    - id: format
+      command: ["sh", "-c", "test -f README.md"]
+  tests:
+    - id: smoke
+      command: ["sh", "-c", "echo ok"]
+  custom: []

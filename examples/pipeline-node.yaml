@@ -1,0 +1,12 @@
+apiVersion: ci.jenkinsservice.dev/v1
+runtime:
+  image: node:22.17.1-bookworm-slim@sha256:2fa754a9ba4d7adbd2a51d182eaabbe355c82b673624035a38c0d42b08724854
+  timeoutMinutes: 20
+steps:
+  standards:
+    - id: lint
+      command: ["npm", "run", "lint"]
+  tests:
+    - id: test
+      command: ["npm", "test", "--", "--ci"]
+  custom: []

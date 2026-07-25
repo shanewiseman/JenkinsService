@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["findings", "requested_github_actions"],
+  "properties": {
+    "findings": {"type": "array", "maxItems": 500, "items": {"type": "object"}},
+    "requested_github_actions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"type": "object"}
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,60 @@
+apiVersion: ci.jenkinsservice.dev/v1
+runtime:
+  image: python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+  timeoutMinutes: 30
+  cpu: 2
+  memory: 2Gi
+  pids: 512
+  network: egress
+  environment:
+    HOME: /tmp
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+steps:
+  standards:
+    - id: bootstrap-ruff
+      name: Locked dependency bootstrap and Ruff
+      command:
+        - /bin/sh
+        - -c
+        - >-
+          python -m venv .ci-venv &&
+          .ci-venv/bin/python -m pip install --requirement requirements-dev.lock &&
+          .ci-venv/bin/python -m pip install --no-deps --no-build-isolation -e . &&
+          .ci-venv/bin/python -m ruff check .
+      reports: []
+    - id: typecheck
+      name: Mypy
+      command: [".ci-venv/bin/python", "-m", "mypy", "src"]
+      reports: []
+  tests:
+    - id: pytest
+      name: Pytest
+      command:
+        - .ci-venv/bin/python
+        - -m
+        - pytest
+        - --junitxml=artifacts/junit.xml
+        - --cov=jenkins_service
+        - --cov-report=xml:artifacts/coverage.xml
+      reports:
+        - type: junit
+          path: artifacts/junit.xml
+        - type: coverage
+          path: artifacts/coverage.xml
+  custom:
+    - id: package
+      name: Build distribution
+      command: [".ci-venv/bin/python", "-m", "build"]
+      reports: []
+artifacts:
+  - name: reports
+    path: artifacts/**
+    required: true
+  - name: distributions
+    path: dist/**
+    required: true
+extensions:
+  - id: reference-review
+    action: review
+    required: false

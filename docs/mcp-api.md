@@ -1,0 +1,26 @@
+# REST and MCP
+
+All service operations are declared in `registry.py` and mirrored under
+`/api/v1`. Read operations are MCP resources; mutations are MCP tools. MCP
+uses standards-compliant Streamable HTTP at `/mcp`.
+
+Bearer tokens have `read`, `operate`, `extend`, or `admin` scope. `operate`
+implies `read`; `extend` implies `read`; `admin` implies all scopes. Token
+digests are loaded from a Docker secret and compared in constant time.
+
+Published tools are:
+
+- `validate_pipeline_contract`
+- `register_repository`, `update_repository`, `unregister_repository`
+- `scan_repository`
+- `trigger_pipeline`, `retry_pipeline`, `cancel_pipeline`
+- `run_extension_action`
+
+Resources cover capabilities/version, schemas/examples, repository
+registrations, queue items, builds/checks/logs/artifacts, extension catalog
+and runs, webhook deliveries, and admin audit records.
+
+Health (`/healthz`), readiness (`/readyz`), and GitHub webhook reception are
+transport endpoints, not service operations. Requests with an `Origin` must
+match the configured allowlist. Public requests require HTTPS as reported by
+the trusted proxy. Responses include a request ID and security headers.

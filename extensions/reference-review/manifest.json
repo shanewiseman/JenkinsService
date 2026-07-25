@@ -1,0 +1,15 @@
+{
+  "schema_version": "ci.jenkinsservice.dev/extension/v1",
+  "id": "reference-review",
+  "image": "example.invalid/jenkinsservice/reference-review@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "compatible_contracts": ["ci.jenkinsservice.dev/v1"],
+  "actions": ["review"],
+  "input_schema": "input.schema.json",
+  "output_schema": "output.schema.json",
+  "github_actions": ["review_comment", "issue_comment", "check_run"],
+  "required_secrets": [],
+  "network": "none",
+  "timeout_seconds": 120,
+  "memory_mb": 256,
+  "cpus": 0.5
+}
