@@ -117,6 +117,8 @@ def create_runner_app(
             "--network",
             "none",
             "--read-only",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108 - isolated container tmpfs
             "--cap-drop",
             "ALL",
             "--security-opt",

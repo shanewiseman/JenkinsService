@@ -86,6 +86,15 @@ def test_contract_validator_invokes_python3_explicitly() -> None:
     assert 'exec python3 -m jenkins_service.contract "${1:-.jenkins/pipeline.yaml}"' in script
 
 
+def test_extension_runner_has_bounded_hardened_tmpfs() -> None:
+    runner = (ROOT / "src/jenkins_service/extension_runner.py").read_text(
+        encoding="utf-8",
+    )
+    assert '"--read-only"' in runner
+    assert '"--tmpfs"' in runner
+    assert '"/tmp:rw,noexec,nosuid,size=64m"' in runner
+
+
 async def test_progressive_logs_are_redacted(
     service,
     store,
