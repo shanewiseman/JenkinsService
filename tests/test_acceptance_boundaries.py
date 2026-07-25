@@ -89,6 +89,37 @@ async def test_progressive_logs_are_redacted(
     assert result["text"] == "token=[REDACTED]"
 
 
+async def test_terminal_queued_build_has_no_more_logs(
+    service,
+    store,
+) -> None:
+    repository = await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    build = Build(
+        repository_id=repository.id,
+        jenkins_job="repositories/allowed--project",
+        jenkins_queue_id=42,
+        result=PipelineResult(
+            repository=repository.full_name,
+            commit_sha="a" * 40,
+            status="queued",
+        ),
+    )
+    await store.save_build(build)
+    service.jenkins.queue_state = {"cancelled": True}
+
+    result = await service.build_log(
+        Principal(
+            token_id="reader",
+            scopes={Scope.READ},
+        ),
+        str(build.id),
+    )
+
+    assert result == {"text": "", "next": 0, "more": False}
+
+
 async def _secret_log(
     job: str,
     build_number: int,

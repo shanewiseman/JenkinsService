@@ -178,6 +178,49 @@ def test_webhook_signature_dedup_and_dispatch(settings, store, service, authenti
         assert bad.status_code == 401
 
 
+def test_webhook_background_audit_retains_request_id(
+    settings,
+    store,
+    service,
+    authenticator,
+) -> None:
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    payload = {
+        "after": "a" * 40,
+        "repository": {"full_name": "allowed/project"},
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    signature = "sha256=" + hmac.new(b"webhook-secret", body, hashlib.sha256).hexdigest()
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/repositories",
+            headers={"Authorization": "Bearer operate-token"},
+            json={"owner": "allowed", "name": "project"},
+        )
+        assert created.status_code == 200
+
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature,
+                "X-GitHub-Delivery": "request-id-delivery",
+                "X-GitHub-Event": "push",
+                "X-Request-ID": "webhook-request-123",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 202
+    assert store.audit[-1].action == "trigger_pipeline"
+    assert store.audit[-1].request_id == "webhook-request-123"
+
+
 def test_webhook_body_limit_is_enforced_while_streaming(
     settings,
     store,

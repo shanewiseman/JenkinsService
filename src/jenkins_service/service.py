@@ -383,7 +383,11 @@ class JenkinsService:
     ) -> dict[str, Any]:
         build = await self._refresh_build(await self.store.get_build(UUID(build_id)))
         if build.jenkins_build_number is None:
-            return {"text": "", "next": 0, "more": True}
+            return {
+                "text": "",
+                "next": 0,
+                "more": build.result.status in {"queued", "running"},
+            }
         offset = int(start)
         if offset < 0:
             raise ValueError("log start offset must be non-negative")

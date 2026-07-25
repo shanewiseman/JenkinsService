@@ -43,6 +43,19 @@ def _response_headers(
     return headers
 
 
+async def _dispatch_github_webhook_with_request_id(
+    service: JenkinsService,
+    event: str,
+    payload: dict[str, Any],
+    request_id: str,
+) -> None:
+    request_id_token = current_request_id.set(request_id)
+    try:
+        await dispatch_github_webhook(service, event, payload)
+    finally:
+        current_request_id.reset(request_id_token)
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -280,10 +293,11 @@ def create_app(
         if not delivery.accepted:
             raise HTTPException(status_code=403, detail=delivery.reason)
         background_tasks.add_task(
-            dispatch_github_webhook,
+            _dispatch_github_webhook_with_request_id,
             service,
             event,
             payload,
+            request.state.request_id,
         )
         return {
             "accepted": True,
