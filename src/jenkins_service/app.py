@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,21 @@ from .security import (
 from .service import JenkinsService
 from .store import PostgresStore, Store
 from .webhook import dispatch_github_webhook, process_github_webhook
+
+
+def _response_headers(
+    request_id: str,
+    extra: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    headers = dict(extra or {})
+    headers.update(
+        {
+            "X-Request-ID": request_id,
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        }
+    )
+    return headers
 
 
 def create_app(
@@ -118,7 +133,7 @@ def create_app(
             return JSONResponse(
                 {"detail": "Origin is not allowed"},
                 status_code=403,
-                headers={"X-Request-ID": request_id},
+                headers=_response_headers(request_id),
             )
         exempt = request.url.path in {
             "/healthz",
@@ -134,7 +149,7 @@ def create_app(
                 return JSONResponse(
                     {"detail": "HTTPS is required"},
                     status_code=400,
-                    headers={"X-Request-ID": request_id},
+                    headers=_response_headers(request_id),
                 )
 
         context_token = None
@@ -143,7 +158,7 @@ def create_app(
                 return JSONResponse(
                     {"detail": "API authentication is not configured"},
                     status_code=503,
-                    headers={"X-Request-ID": request_id},
+                    headers=_response_headers(request_id),
                 )
             try:
                 token = bearer_token(request)
@@ -151,29 +166,26 @@ def create_app(
                 return JSONResponse(
                     {"detail": exc.detail},
                     status_code=exc.status_code,
-                    headers={
-                        **(exc.headers or {}),
-                        "X-Request-ID": request_id,
-                    },
+                    headers=_response_headers(request_id, exc.headers),
                 )
             principal = authenticator.authenticate(token)
             if principal is None:
                 return JSONResponse(
                     {"detail": "Invalid bearer token"},
                     status_code=401,
-                    headers={
-                        "WWW-Authenticate": 'Bearer realm="jenkins-service"',
-                        "X-Request-ID": request_id,
-                    },
+                    headers=_response_headers(
+                        request_id,
+                        {"WWW-Authenticate": 'Bearer realm="jenkins-service"'},
+                    ),
                 )
             if not limiter.allow(principal.token_id):
                 return JSONResponse(
                     {"detail": "Rate limit exceeded"},
                     status_code=429,
-                    headers={
-                        "Retry-After": "60",
-                        "X-Request-ID": request_id,
-                    },
+                    headers=_response_headers(
+                        request_id,
+                        {"Retry-After": "60"},
+                    ),
                 )
             request.state.principal = principal
             context_token = current_principal.set(principal)
@@ -185,9 +197,8 @@ def create_app(
             current_request_id.reset(request_id_token)
             if context_token is not None:
                 current_principal.reset(context_token)
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        for name, value in _response_headers(request_id).items():
+            response.headers[name] = value
         return response
 
     @app.exception_handler(UpstreamError)

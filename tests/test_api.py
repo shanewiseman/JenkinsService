@@ -61,6 +61,9 @@ def test_origin_and_repository_allowlist(settings, store, service, authenticator
             },
         )
         assert origin.status_code == 403
+        assert origin.headers["X-Request-ID"]
+        assert origin.headers["X-Content-Type-Options"] == "nosniff"
+        assert origin.headers["Referrer-Policy"] == "no-referrer"
         denied = client.post(
             "/api/v1/repositories",
             headers={"Authorization": "Bearer operate-token"},
