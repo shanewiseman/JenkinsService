@@ -38,6 +38,8 @@ def validate_branch_name(value: str) -> str:
 
 
 def validate_relative_path(value: str) -> str:
+    if not value:
+        raise ValueError("path must not be empty")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or "\\" in value:
         raise ValueError("path must be relative and may not traverse parent directories")

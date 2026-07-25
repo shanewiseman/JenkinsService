@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from jenkins_service.models import Artifact, ExtensionManifest, PipelineResult, RepositoryCreate
+from jenkins_service.models import (
+    Artifact,
+    CheckResult,
+    ExtensionManifest,
+    PipelineResult,
+    RepositoryCreate,
+)
 
 
 def test_pipeline_result_requires_exact_commit() -> None:
@@ -58,4 +64,20 @@ def test_pipeline_result_rejects_unknown_fields_and_unsafe_artifact_paths() -> N
             path="../secret",
             sha256="a" * 64,
             size=1,
+        )
+    with pytest.raises(ValidationError, match="must not be empty"):
+        Artifact(
+            name="bad",
+            path="",
+            sha256="a" * 64,
+            size=1,
+        )
+    with pytest.raises(ValidationError, match="must not be empty"):
+        CheckResult(
+            id="test",
+            name="test",
+            status="passed",
+            required=True,
+            duration_seconds=0,
+            reports=[""],
         )

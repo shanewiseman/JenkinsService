@@ -381,14 +381,17 @@ class PostgresStore:
         await self._pool().execute(
             """
             INSERT INTO queue_items
-                (id, repository_id, data)
-            VALUES ($1, $2, $3::jsonb)
+                (id, repository_id, data, created_at)
+            VALUES ($1, $2, $3::jsonb, $4)
             ON CONFLICT (id)
-            DO UPDATE SET data = EXCLUDED.data
+            DO UPDATE SET
+                data = EXCLUDED.data,
+                created_at = EXCLUDED.created_at
             """,
             value.id,
             value.repository_id,
             _json(value),
+            value.created_at,
         )
         return value
 
@@ -414,16 +417,19 @@ class PostgresStore:
         await self._pool().execute(
             """
             INSERT INTO builds
-                (id, repository_id, data)
-            VALUES ($1, $2, $3::jsonb)
+                (id, repository_id, data, created_at, updated_at)
+            VALUES ($1, $2, $3::jsonb, $4, $5)
             ON CONFLICT (id)
             DO UPDATE SET
                 data = EXCLUDED.data,
-                updated_at = now()
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at
             """,
             value.id,
             value.repository_id,
             _json(value),
+            value.created_at,
+            value.updated_at,
         )
         return value
 
@@ -449,13 +455,14 @@ class PostgresStore:
         row = await self._pool().fetchrow(
             """
             INSERT INTO webhook_deliveries
-                (delivery_id, data)
-            VALUES ($1, $2::jsonb)
+                (delivery_id, data, received_at)
+            VALUES ($1, $2::jsonb, $3)
             ON CONFLICT (delivery_id) DO NOTHING
             RETURNING delivery_id
             """,
             value.delivery_id,
             _json(value),
+            value.received_at,
         )
         return row is not None
 
@@ -472,19 +479,26 @@ class PostgresStore:
         row = await self._pool().fetchrow(
             """
             INSERT INTO extension_runs
-                (id, idempotency_key, data)
-            VALUES ($1, $2, $3::jsonb)
+                (id, idempotency_key, data, created_at)
+            VALUES ($1, $2, $3::jsonb, $4)
             ON CONFLICT (idempotency_key)
-            DO UPDATE SET data = CASE
-                WHEN extension_runs.id = EXCLUDED.id
-                    THEN EXCLUDED.data
-                ELSE extension_runs.data
-            END
+            DO UPDATE SET
+                data = CASE
+                    WHEN extension_runs.id = EXCLUDED.id
+                        THEN EXCLUDED.data
+                    ELSE extension_runs.data
+                END,
+                created_at = CASE
+                    WHEN extension_runs.id = EXCLUDED.id
+                        THEN EXCLUDED.created_at
+                    ELSE extension_runs.created_at
+                END
             RETURNING data
             """,
             value.id,
             value.idempotency_key,
             _json(value),
+            value.created_at,
         )
         return ExtensionRun.model_validate(row["data"])
 
@@ -512,13 +526,14 @@ class PostgresStore:
     ) -> None:
         await self._pool().execute(
             "INSERT INTO audit_records "
-            "(id, actor, action, target, data) "
-            "VALUES ($1, $2, $3, $4, $5::jsonb)",
+            "(id, actor, action, target, data, created_at) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb, $6)",
             value.id,
             value.actor,
             value.action,
             value.target,
             _json(value),
+            value.created_at,
         )
 
     async def list_audit(self) -> list[AuditRecord]:
