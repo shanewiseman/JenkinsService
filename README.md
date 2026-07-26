@@ -32,8 +32,7 @@ docker compose up -d
 Set `PUBLIC_BASE_URL`, `JENKINS_HOST`, `DMZ_NETWORK`,
 `TRAEFIK_ENTRYPOINT`, `TRAEFIK_CERT_RESOLVER`, `GITHUB_ALLOWLIST`, and
 `ALLOWED_ORIGINS` in `.env` before startup. Place the two fine-grained GitHub
-PATs in
-`secrets/github_read_pat` and `secrets/github_write_pat`; they must be
+PATs in `secrets/github_read_pat` and `secrets/github_write_pat`; they must be
 different credentials. The bootstrap script creates other missing secrets
 without replacing existing values and prints the new API bearer token once.
 
@@ -50,6 +49,14 @@ Traefik with TLS; every internal service is explicitly opted out. Traefik
 preserves the host and sets forwarded HTTPS headers.
 PostgreSQL, the Docker API, the extension runner, review broker, and Jenkins
 agent port have no public host bindings.
+
+Activate any allowlisted repository with its trusted default branch. The helper
+prompts for the gateway administrator bearer token and triggers the initial
+multibranch scan:
+
+```bash
+./scripts/activate-repository.sh OWNER/REPOSITORY [DEFAULT_BRANCH]
+```
 
 ## Repository contract
 

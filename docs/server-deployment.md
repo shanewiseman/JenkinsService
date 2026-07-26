@@ -27,7 +27,8 @@ cross-host provider/overlay design; a local bridge network cannot span hosts.
 Use a dedicated, fully patched x86-64 Linux server. The supported baseline is:
 
 - Docker Engine 29 or newer, with the Compose plugin 5 or newer
-- OpenSSL and an existing Traefik deployment with the Docker provider enabled
+- OpenSSL, curl, and Python 3 for bootstrap and repository activation
+- an existing Traefik deployment with the Docker provider enabled
 - a Traefik HTTPS entrypoint and ACME certificate resolver
 - an external Docker network shared with Traefik, normally `dmz_internal`
 - a public IPv4 or IPv6 address reachable by Traefik on TCP 80 and 443
@@ -328,59 +329,44 @@ GitHub. Select only `shanewiseman/j-link_mcp` under repository access:
    access automatically. Store it in `secrets/github_read_pat`.
 2. **Write PAT**: grant **Pull requests: Read and write** and
    **Commit statuses: Read and write**. Store it in
-   `secrets/github_write_pat`.
+   `secrets/github_write_pat`. Do not grant this token **Contents** access.
+
+The AI review broker receives no GitHub PAT. It returns bounded review output to
+the gateway, and only the gateway uses the write PAT to publish a batched pull
+request review and the `jenkinsservice/ai-review` commit status.
 
 Use separate token identities if the organization supports that operational
 model. Set an expiration, record the owner and rotation date, and approve any
 organization authorization GitHub requires. Do not broaden either token to
 all repositories. Restart only the services that consume a rotated secret.
 
-## 6. Register j-link_mcp
+## 6. Activate a repository
 
-Read the one-time gateway administrator token from the password manager into
-a shell variable without echoing it:
-
-```bash
-read -r -s JENKINSSERVICE_ADMIN_TOKEN
-```
-
-Register the repository with the trusted default branch `master`:
+Use the generic activation helper with an `OWNER/REPOSITORY` argument and an
+optional trusted default branch:
 
 ```bash
-curl --fail-with-body \
-  --request POST \
-  --header "Authorization: Bearer ${JENKINSSERVICE_ADMIN_TOKEN}" \
-  --header "Content-Type: application/json" \
-  --header "Origin: https://jenkins.shanewiseman.co" \
-  --data '{"owner":"shanewiseman","name":"j-link_mcp","default_branch":"master","enabled":true}' \
-  https://jenkins.shanewiseman.co/api/v1/repositories
+./scripts/activate-repository.sh shanewiseman/j-link_mcp master
 ```
 
-Save the returned repository UUID. Confirm the registration and request an
-initial multibranch scan:
+The helper prompts without echo for the one-time gateway administrator bearer
+token. It lists existing registrations, creates or reconciles the requested
+repository with `enabled=true`, captures its UUID, and requests the initial
+multibranch scan. It is safe to rerun. The repository must already match
+`GITHUB_ALLOWLIST`.
+
+For a non-default deployment URL or browser origin, set
+`JENKINSSERVICE_URL` and `JENKINSSERVICE_ORIGIN`. Non-interactive automation
+may provide `JENKINSSERVICE_ADMIN_TOKEN` in its protected environment; do not
+put the token on the command line or commit it:
 
 ```bash
-curl --fail-with-body \
-  --header "Authorization: Bearer ${JENKINSSERVICE_ADMIN_TOKEN}" \
-  --header "Origin: https://jenkins.shanewiseman.co" \
-  https://jenkins.shanewiseman.co/api/v1/repositories
-
-curl --fail-with-body \
-  --request POST \
-  --header "Authorization: Bearer ${JENKINSSERVICE_ADMIN_TOKEN}" \
-  --header "Content-Type: application/json" \
-  --header "Origin: https://jenkins.shanewiseman.co" \
-  --data '{"repository_id":"REPOSITORY_UUID"}' \
-  https://jenkins.shanewiseman.co/api/v1/repositories/scan
+JENKINSSERVICE_URL=https://ci.example.com \
+JENKINSSERVICE_ORIGIN=https://ci.example.com \
+  ./scripts/activate-repository.sh OWNER/REPOSITORY main
 ```
 
-Unset the plaintext shell variable when finished:
-
-```bash
-unset JENKINSSERVICE_ADMIN_TOKEN
-```
-
-Registration reconciles the managed Jenkins job. Do not create a second
+Activation reconciles the managed Jenkins job. Do not create a second
 hand-written Jenkins job for the same repository.
 
 ## 7. Configure the GitHub webhook
