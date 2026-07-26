@@ -162,9 +162,21 @@ def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:
         encoding="utf-8",
     )
 
+    assert "rm -rf -- artifacts && mkdir -m 0777 artifacts" in pipeline
     assert 'String cleanupFilter = shellQuote("label=${buildLabel}")' in pipeline
     assert "docker ps -aq --filter ${cleanupFilter}" in pipeline
     assert "--filter 'label=${shellQuote(buildLabel)}'" not in pipeline
+
+
+def test_pipeline_contract_commands_and_sarif_publication_use_valid_step_syntax() -> None:
+    pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
+        encoding="utf-8",
+    )
+    docker_command = pipeline.split("private String dockerCommand", 1)[1]
+
+    assert '""".stripIndent().trim()' in docker_command
+    assert "tools: [sarif(pattern: 'artifacts/*.sarif')]" in pipeline
+    assert "recordIssues enabledForFailure: true, sarif(" not in pipeline
 
 
 def test_pipeline_json_parsing_does_not_retain_a_parser_across_cps_steps() -> None:

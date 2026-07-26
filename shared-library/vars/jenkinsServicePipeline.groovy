@@ -78,6 +78,7 @@ PY
                             ]
                         ])
                         sh 'test "$(git rev-parse HEAD)" = "$COMMIT_SHA"'
+                        sh 'rm -rf -- artifacts && mkdir -m 0777 artifacts'
                     }
                 }
 
@@ -192,7 +193,10 @@ PY
                         }
                     }
                     archiveArtifacts allowEmptyArchive: false, artifacts: 'artifacts/**,dist/**', fingerprint: true
-                    recordIssues enabledForFailure: true, sarif(pattern: 'artifacts/*.sarif')
+                    recordIssues(
+                        enabledForFailure: true,
+                        tools: [sarif(pattern: 'artifacts/*.sarif')]
+                    )
                 }
             }
 
@@ -526,7 +530,7 @@ private String dockerCommand(
           --volume ${shellQuote(pwd() + '/source')}:/workspace:rw \\
           --workdir ${shellQuote('/workspace/' + workingDirectory)} ${environmentArgs} \\
           ${shellQuote(runtime.image.toString())} /bin/sh -eu -c ${shellQuote(commandText)}
-    """.stripIndent()
+    """.stripIndent().trim()
 }
 
 private String shellQuote(String value) {
