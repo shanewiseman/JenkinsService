@@ -9,10 +9,7 @@ while [ "$attempt" -lt 60 ]; do
   secret="$(printf '%s' "$document" | sed -n 's:.*<argument>\([a-f0-9]\{64\}\)</argument>.*:\1:p' | head -n 1)"
   if [ -n "$secret" ]; then
     exec /usr/local/bin/jenkins-agent \
-      -url "$JENKINS_URL" \
-      -name "$JENKINS_AGENT_NAME" \
       -secret "$secret" \
-      -webSocket \
       -workDir /home/jenkins/agent
   fi
   attempt=$((attempt + 1))
