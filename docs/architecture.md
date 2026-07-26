@@ -34,6 +34,13 @@ The agent workspace is a named volume also mounted in DinD so child containers
 can see only explicitly bound workspace paths. Repository runtime containers
 receive no Docker TLS directory.
 
+The versioned pipeline shared library is an immutable Git repository baked
+into the controller image at `/usr/share/jenkins/ref/shared-library`. Jenkins'
+local-checkout system property is enabled for this operator-configured
+`file://` source; JCasC fixes the only global-library remote to that image path,
+pins its default to `v1`, and disables per-job version overrides. Repository
+runtime containers cannot mount or select controller filesystem paths.
+
 `registry.py` is the sole publication boundary. It defines each operation's
 ID, REST method/path, required scope, and MCP resource/tool classification.
 Transport endpoints (health, readiness, authentication challenge, webhook)
