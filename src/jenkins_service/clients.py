@@ -75,7 +75,7 @@ class JenkinsClient:
         escaped_default_branch = self._groovy_single_quoted(default_branch)
         escaped_repository = self._groovy_single_quoted(f"{owner}/{name}")
         script = (
-            "@Library('jenkins-service-contract@v1') _\n"
+            "@Library('jenkins-service-contract') _\n"
             "jenkinsServicePipeline("
             f"repositoryUrl: '{escaped_repository_url}', "
             f"trustedBranch: '{escaped_default_branch}', "
