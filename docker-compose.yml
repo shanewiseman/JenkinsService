@@ -26,6 +26,8 @@ services:
       control:
         aliases: [docker]
       egress: {}
+    labels:
+      - "traefik.enable=false"
     healthcheck:
       test:
         - CMD-SHELL
@@ -65,11 +67,24 @@ services:
       - jenkins-data:/var/jenkins_home
     ports:
       - "127.0.0.1:${JENKINS_PORT:-18080}:8080"
-    expose:
-      - "50000"
     networks:
       control: {}
       egress: {}
+      dmz: {}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${DMZ_NETWORK:-dmz_internal}"
+      - "traefik.http.routers.jenkinsservice-jenkins.rule=Host(`${JENKINS_HOST:?Set JENKINS_HOST to the public hostname}`) && (Path(`/jenkins`) || PathPrefix(`/jenkins/`))"
+      - "traefik.http.routers.jenkinsservice-jenkins.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.jenkinsservice-jenkins.tls=true"
+      - "traefik.http.routers.jenkinsservice-jenkins.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-myresolver}"
+      - "traefik.http.routers.jenkinsservice-jenkins.priority=200"
+      - "traefik.http.routers.jenkinsservice-jenkins.service=jenkinsservice-jenkins"
+      - "traefik.http.routers.jenkinsservice-jenkins.middlewares=jenkinsservice-jenkins-slash"
+      - "traefik.http.middlewares.jenkinsservice-jenkins-slash.redirectregex.regex=^https?://([^/]+)/jenkins$"
+      - "traefik.http.middlewares.jenkinsservice-jenkins-slash.redirectregex.replacement=https://$${1}/jenkins/"
+      - "traefik.http.middlewares.jenkinsservice-jenkins-slash.redirectregex.permanent=true"
+      - "traefik.http.services.jenkinsservice-jenkins.loadbalancer.server.port=8080"
     healthcheck:
       test:
         - CMD-SHELL
@@ -106,6 +121,8 @@ services:
     networks:
       control: {}
       egress: {}
+    labels:
+      - "traefik.enable=false"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 512
@@ -127,6 +144,8 @@ services:
       - ./migrations:/docker-entrypoint-initdb.d:ro
     networks:
       database: {}
+    labels:
+      - "traefik.enable=false"
     healthcheck:
       test:
         - CMD-SHELL
@@ -155,6 +174,8 @@ services:
       - docker-certs-client:/certs/client:ro
     networks:
       control: {}
+    labels:
+      - "traefik.enable=false"
     healthcheck:
       test:
         - CMD
@@ -199,6 +220,8 @@ services:
     networks:
       control: {}
       egress: {}
+    labels:
+      - "traefik.enable=false"
     healthcheck:
       test:
         - CMD
@@ -255,6 +278,17 @@ services:
       control: {}
       database: {}
       egress: {}
+      dmz: {}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${DMZ_NETWORK:-dmz_internal}"
+      - "traefik.http.routers.jenkinsservice-gateway.rule=Host(`${JENKINS_HOST:?Set JENKINS_HOST to the public hostname}`)"
+      - "traefik.http.routers.jenkinsservice-gateway.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.jenkinsservice-gateway.tls=true"
+      - "traefik.http.routers.jenkinsservice-gateway.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-myresolver}"
+      - "traefik.http.routers.jenkinsservice-gateway.priority=1"
+      - "traefik.http.routers.jenkinsservice-gateway.service=jenkinsservice-gateway"
+      - "traefik.http.services.jenkinsservice-gateway.loadbalancer.server.port=8000"
     healthcheck:
       test:
         - CMD
@@ -313,3 +347,6 @@ networks:
   database:
     internal: true
   egress:
+  dmz:
+    external: true
+    name: ${DMZ_NETWORK:-dmz_internal}

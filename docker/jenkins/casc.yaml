@@ -2,7 +2,7 @@ jenkins:
   systemMessage: "JenkinsService — configuration is managed by JCasC"
   numExecutors: 0
   mode: EXCLUSIVE
-  slaveAgentPort: 50000
+  slaveAgentPort: -1
   disableRememberMe: true
   markupFormatter:
     plainText
