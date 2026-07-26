@@ -124,10 +124,10 @@ async def test_webhook_dispatch_uses_operate_scope(
     await store.create_repository(
         RepositoryCreate(owner="allowed", name="project"),
     )
-    principals = []
+    triggers = []
 
     async def capture_trigger(principal, payload) -> None:
-        principals.append(principal)
+        triggers.append((principal, payload))
 
     monkeypatch.setattr(service, "trigger_pipeline", capture_trigger)
     await dispatch_github_webhook(
@@ -135,12 +135,14 @@ async def test_webhook_dispatch_uses_operate_scope(
         "push",
         {
             "after": "a" * 40,
+            "ref": "refs/heads/feature/standalone",
             "repository": {"full_name": "allowed/project"},
         },
     )
 
-    assert len(principals) == 1
-    assert principals[0].scopes == {Scope.OPERATE}
+    assert len(triggers) == 1
+    assert triggers[0][0].scopes == {Scope.OPERATE}
+    assert triggers[0][1].branch == "feature/standalone"
 
 
 async def test_webhook_dispatch_ignores_malformed_payload_shapes(
@@ -165,6 +167,15 @@ async def test_webhook_dispatch_ignores_malformed_payload_shapes(
             {
                 "repository": {"full_name": "allowed/project"},
                 "after": 123,
+                "ref": "refs/heads/main",
+            },
+        ),
+        (
+            "push",
+            {
+                "repository": {"full_name": "allowed/project"},
+                "after": "a" * 40,
+                "ref": "refs/tags/v1",
             },
         ),
         (
@@ -192,6 +203,42 @@ async def test_webhook_dispatch_ignores_malformed_payload_shapes(
         await dispatch_github_webhook(service, event, payload)
 
     assert triggered == []
+
+
+async def test_webhook_dispatch_routes_pull_request_to_stable_pr_job(
+    store,
+    service,
+    monkeypatch,
+) -> None:
+    await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    triggered = []
+
+    async def capture_trigger(principal, payload) -> None:
+        triggered.append(payload)
+
+    monkeypatch.setattr(service, "trigger_pipeline", capture_trigger)
+    await dispatch_github_webhook(
+        service,
+        "pull_request",
+        {
+            "repository": {"full_name": "allowed/project"},
+            "action": "synchronize",
+            "pull_request": {
+                "number": 17,
+                "head": {
+                    "sha": "a" * 40,
+                    "ref": "feature/display-refresh",
+                },
+                "base": {"sha": "b" * 40},
+            },
+        },
+    )
+
+    assert len(triggered) == 1
+    assert triggered[0].branch == "feature/display-refresh"
+    assert triggered[0].pull_request == 17
 
 
 async def test_webhook_processing_rejects_malformed_repository_shape(
@@ -230,6 +277,7 @@ def test_webhook_signature_dedup_and_dispatch(settings, store, service, authenti
     )
     payload = {
         "after": "a" * 40,
+        "ref": "refs/heads/main",
         "repository": {"full_name": "allowed/project"},
     }
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -270,6 +318,7 @@ def test_webhook_background_audit_retains_request_id(
     )
     payload = {
         "after": "a" * 40,
+        "ref": "refs/heads/main",
         "repository": {"full_name": "allowed/project"},
     }
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -331,6 +380,7 @@ def test_openapi_contains_registry_not_raw_jenkins(settings, store, service, aut
     paths = schema["paths"]
     assert "/api/v1/pipelines/trigger" in paths
     assert "/api/v1/extensions/run" in paths
+    assert "/api/v1/builds/{build_id}/artifacts/ai-review.json" in paths
     assert all("script" not in path and "credential" not in path for path in paths)
 
 

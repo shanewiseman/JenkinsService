@@ -82,6 +82,13 @@ class Store(Protocol):
 
     async def list_builds(self) -> list[Build]: ...
 
+    async def rebind_jenkins_job(
+        self,
+        repository_id: UUID,
+        old_job: str,
+        new_job: str,
+    ) -> None: ...
+
     async def record_webhook_once(
         self,
         value: WebhookDelivery,
@@ -92,6 +99,11 @@ class Store(Protocol):
     async def save_extension_run(
         self,
         value: ExtensionRun,
+    ) -> ExtensionRun: ...
+
+    async def get_extension_run(
+        self,
+        run_id: UUID,
     ) -> ExtensionRun: ...
 
     async def get_extension_run_by_key(
@@ -222,6 +234,16 @@ class MemoryStore:
             reverse=True,
         )
 
+    async def rebind_jenkins_job(
+        self,
+        repository_id: UUID,
+        old_job: str,
+        new_job: str,
+    ) -> None:
+        for build_id, build in self.builds.items():
+            if build.repository_id == repository_id and build.jenkins_job == old_job:
+                self.builds[build_id] = build.model_copy(update={"jenkins_job": new_job})
+
     async def record_webhook_once(
         self,
         value: WebhookDelivery,
@@ -248,6 +270,15 @@ class MemoryStore:
         self.extension_runs[value.id] = value
         self.extension_keys[value.idempotency_key] = value.id
         return value
+
+    async def get_extension_run(
+        self,
+        run_id: UUID,
+    ) -> ExtensionRun:
+        try:
+            return self.extension_runs[run_id]
+        except KeyError as exc:
+            raise NotFoundError(f"extension run not found: {run_id}") from exc
 
     async def get_extension_run_by_key(
         self,
@@ -454,6 +485,24 @@ class PostgresStore:
         )
         return [_model_from_json(Build, row["data"]) for row in rows]
 
+    async def rebind_jenkins_job(
+        self,
+        repository_id: UUID,
+        old_job: str,
+        new_job: str,
+    ) -> None:
+        await self._pool().execute(
+            """
+            UPDATE builds
+            SET data = jsonb_set(data, '{jenkins_job}', to_jsonb($3::text), false)
+            WHERE repository_id = $1
+              AND data->>'jenkins_job' = $2
+            """,
+            repository_id,
+            old_job,
+            new_job,
+        )
+
     async def record_webhook_once(
         self,
         value: WebhookDelivery,
@@ -506,6 +555,18 @@ class PostgresStore:
             _json(value),
             value.created_at,
         )
+        return _model_from_json(ExtensionRun, row["data"])
+
+    async def get_extension_run(
+        self,
+        run_id: UUID,
+    ) -> ExtensionRun:
+        row = await self._pool().fetchrow(
+            "SELECT data FROM extension_runs WHERE id = $1",
+            run_id,
+        )
+        if row is None:
+            raise NotFoundError(f"extension run not found: {run_id}")
         return _model_from_json(ExtensionRun, row["data"])
 
     async def get_extension_run_by_key(

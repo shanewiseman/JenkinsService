@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from base64 import b64encode
 from dataclasses import dataclass
@@ -61,6 +62,34 @@ class JenkinsClient:
         return f"{owner}--{name}"
 
     @staticmethod
+    def legacy_job_name(owner: str, name: str) -> str:
+        return f"{JenkinsClient.job_name(owner, name)}--legacy"
+
+    @staticmethod
+    def branch_job_name(branch: str, pull_request: int | None = None) -> str:
+        if pull_request is not None:
+            return f"PR-{pull_request}"
+        slug = branch.replace("/", "-")[:120]
+        digest = hashlib.sha256(branch.encode()).hexdigest()[:16]
+        return f"branch-{slug}-{digest}"
+
+    @classmethod
+    def managed_job_path(
+        cls,
+        owner: str,
+        name: str,
+        branch: str,
+        pull_request: int | None = None,
+    ) -> str:
+        return (
+            f"repositories/{cls.job_name(owner, name)}/{cls.branch_job_name(branch, pull_request)}"
+        )
+
+    @classmethod
+    def legacy_job_path(cls, owner: str, name: str) -> str:
+        return f"repositories/{cls.legacy_job_name(owner, name)}"
+
+    @staticmethod
     def _job_path(job: str) -> str:
         return "/job/".join(quote(part, safe="") for part in job.split("/"))
 
@@ -68,8 +97,87 @@ class JenkinsClient:
     def _groovy_single_quoted(value: str) -> str:
         return value.replace("\\", "\\\\").replace("'", "\\'")
 
-    async def ensure_job(self, owner: str, name: str, default_branch: str) -> None:
-        job_name = self.job_name(owner, name)
+    async def _item(self, path: str) -> httpx.Response:
+        return await self.client.get(
+            f"{self.base_url}/job/{self._job_path(path)}/api/json",
+            params={"tree": "_class"},
+            auth=self.auth,
+        )
+
+    async def _create_item(self, parent: str, name: str, xml: str) -> None:
+        headers = {**await self._crumb(), "Content-Type": "application/xml"}
+        response = await self.client.post(
+            f"{self.base_url}/job/{self._job_path(parent)}/createItem",
+            auth=self.auth,
+            headers=headers,
+            params={"name": name},
+            content=xml,
+        )
+        response.raise_for_status()
+
+    async def _ensure_repository_folder(self, owner: str, name: str) -> None:
+        repository_name = self.job_name(owner, name)
+        repository_path = f"repositories/{repository_name}"
+        existing = await self._item(repository_path)
+        if existing.status_code != 404:
+            existing.raise_for_status()
+            item_class = existing.json().get("_class")
+            if item_class == "com.cloudbees.hudson.plugins.folder.Folder":
+                return
+            if item_class != "org.jenkinsci.plugins.workflow.job.WorkflowJob":
+                raise UpstreamError(
+                    f"repository Jenkins path has an unexpected item type: {repository_path}"
+                )
+            legacy_path = f"repositories/{self.legacy_job_name(owner, name)}"
+            legacy = await self._item(legacy_path)
+            if legacy.status_code != 404:
+                legacy.raise_for_status()
+                raise UpstreamError(
+                    f"cannot migrate Jenkins job for {owner}/{name}: "
+                    "the legacy history path already exists"
+                )
+            await self._post(
+                f"/job/{self._job_path(repository_path)}/doRename",
+                params={"newName": self.legacy_job_name(owner, name)},
+            )
+
+        folder_xml = (
+            "<?xml version='1.1' encoding='UTF-8'?>"
+            "<com.cloudbees.hudson.plugins.folder.Folder plugin='cloudbees-folder'>"
+            "<actions/><description>Managed repository branches. Do not edit.</description>"
+            "<properties/><folderViews class='com.cloudbees.hudson.plugins.folder.views."
+            "DefaultFolderViewHolder'><views><hudson.model.AllView><owner class='"
+            "com.cloudbees.hudson.plugins.folder.Folder' reference='../../../..'/>"
+            "<name>All</name><filterExecutors>false</filterExecutors>"
+            "<filterQueue>false</filterQueue><properties class='hudson.model."
+            "View$PropertyList'/></hudson.model.AllView></views>"
+            "<tabBar class='hudson.views.DefaultViewsTabBar'/></folderViews>"
+            "<healthMetrics/><icon class='com.cloudbees.hudson.plugins.folder.icons."
+            "StockFolderIcon'/></com.cloudbees.hudson.plugins.folder.Folder>"
+        )
+        try:
+            await self._create_item("repositories", repository_name, folder_xml)
+        except httpx.HTTPError as exc:
+            raise UpstreamError(
+                f"failed to create Jenkins repository folder for {owner}/{name}"
+            ) from exc
+
+    async def ensure_job(
+        self,
+        owner: str,
+        name: str,
+        default_branch: str,
+        branch: str | None = None,
+        pull_request: int | None = None,
+    ) -> None:
+        branch = branch or default_branch
+        await self._ensure_repository_folder(owner, name)
+        repository_name = self.job_name(owner, name)
+        child_name = self.branch_job_name(branch, pull_request)
+        if pull_request is not None:
+            display_name = f"PR-{pull_request}"
+        else:
+            display_name = branch
         repository_url = f"{self.github_web_url}/{owner}/{name}.git"
         escaped_repository_url = self._groovy_single_quoted(repository_url)
         escaped_default_branch = self._groovy_single_quoted(default_branch)
@@ -85,7 +193,9 @@ class JenkinsClient:
         xml = (
             "<?xml version='1.1' encoding='UTF-8'?>"
             "<flow-definition plugin='workflow-job'>"
-            "<actions/><description>Managed by JenkinsService. Do not edit.</description>"
+            f"<actions/><description>Managed {escape(display_name)} pipeline. Do not edit."
+            "</description>"
+            f"<displayName>{escape(display_name)}</displayName>"
             "<keepDependencies>false</keepDependencies>"
             "<properties>"
             "<hudson.model.ParametersDefinitionProperty><parameterDefinitions>"
@@ -108,18 +218,19 @@ class JenkinsClient:
             f"<script>{escape(script)}</script><sandbox>true</sandbox>"
             "</definition><triggers/><disabled>false</disabled></flow-definition>"
         )
-        encoded = quote(job_name, safe="")
-        existing = await self.client.get(
-            f"{self.base_url}/job/repositories/job/{encoded}/api/json",
-            auth=self.auth,
-        )
+        job_path = f"repositories/{repository_name}/{child_name}"
+        existing = await self._item(job_path)
         headers = {**await self._crumb(), "Content-Type": "application/xml"}
         if existing.status_code == 404:
-            path = "/job/repositories/createItem"
-            params = {"name": job_name}
+            path = f"/job/{self._job_path(f'repositories/{repository_name}')}/createItem"
+            params = {"name": child_name}
         else:
             existing.raise_for_status()
-            path = f"/job/repositories/job/{encoded}/config.xml"
+            if existing.json().get("_class") != "org.jenkinsci.plugins.workflow.job.WorkflowJob":
+                raise UpstreamError(
+                    f"managed Jenkins branch path has an unexpected item type: {job_path}"
+                )
+            path = f"/job/{self._job_path(job_path)}/config.xml"
             params = None
         try:
             response = await self.client.post(
@@ -131,15 +242,23 @@ class JenkinsClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise UpstreamError(f"failed to reconcile Jenkins job for {owner}/{name}") from exc
+            raise UpstreamError(
+                f"failed to reconcile Jenkins job for {owner}/{name} {display_name}"
+            ) from exc
 
     async def delete_job(self, owner: str, name: str) -> None:
-        encoded = quote(self.job_name(owner, name), safe="")
-        await self._post(f"/job/repositories/job/{encoded}/doDelete")
+        for path in (
+            f"repositories/{self.job_name(owner, name)}",
+            self.legacy_job_path(owner, name),
+        ):
+            existing = await self._item(path)
+            if existing.status_code == 404:
+                continue
+            existing.raise_for_status()
+            await self._post(f"/job/{self._job_path(path)}/doDelete")
 
-    async def scan(self, owner: str, name: str) -> None:
-        encoded = quote(self.job_name(owner, name), safe="")
-        await self._post(f"/job/repositories/job/{encoded}/build")
+    async def scan(self, owner: str, name: str, default_branch: str) -> None:
+        await self.ensure_job(owner, name, default_branch)
 
     async def trigger(
         self,
@@ -149,10 +268,13 @@ class JenkinsClient:
         pull_request: int | None,
         base_sha: str | None = None,
         build_id: str | None = None,
+        branch: str | None = None,
     ) -> int:
-        encoded = quote(self.job_name(owner, name), safe="")
+        if branch is None:
+            raise ValueError("branch is required when triggering a managed Jenkins job")
+        job = self.managed_job_path(owner, name, branch, pull_request)
         response = await self._post(
-            f"/job/repositories/job/{encoded}/buildWithParameters",
+            f"/job/{self._job_path(job)}/buildWithParameters",
             params={
                 "COMMIT_SHA": commit_sha,
                 "PULL_REQUEST": str(pull_request or ""),
@@ -398,6 +520,66 @@ class GitHubClient:
         except httpx.HTTPError as exc:
             raise UpstreamError("GitHub batched review publication failed") from exc
         return cast(dict[str, Any], response.json())
+
+    async def pull_request_diff(
+        self,
+        repository: str,
+        pull_number: int,
+        *,
+        base_sha: str,
+        head_sha: str,
+        max_bytes: int,
+    ) -> str:
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        path = f"{self.api_url}/repos/{repository}/pulls/{pull_number}"
+
+        async def verify_identity() -> None:
+            response = await self.client.get(path, headers=self.headers)
+            try:
+                response.raise_for_status()
+                payload = response.json()
+                actual_base = payload["base"]["sha"]
+                actual_head = payload["head"]["sha"]
+            except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                raise UpstreamError("GitHub pull request identity is unavailable") from exc
+            if (
+                not isinstance(actual_base, str)
+                or not isinstance(actual_head, str)
+                or actual_base.lower() != base_sha.lower()
+                or actual_head.lower() != head_sha.lower()
+            ):
+                raise UpstreamError("GitHub pull request changed while preparing its review")
+
+        await verify_identity()
+        diff_headers = {
+            **self.headers,
+            "Accept": "application/vnd.github.diff",
+        }
+        content = bytearray()
+        try:
+            async with self.client.stream("GET", path, headers=diff_headers) as response:
+                response.raise_for_status()
+                declared = response.headers.get("content-length")
+                if declared is not None and int(declared) > max_bytes:
+                    raise UpstreamError("GitHub pull request diff exceeds configured byte limit")
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > max_bytes:
+                        raise UpstreamError(
+                            "GitHub pull request diff exceeds configured byte limit"
+                        )
+        except UpstreamError:
+            raise
+        except (httpx.HTTPError, UnicodeDecodeError, ValueError) as exc:
+            raise UpstreamError("GitHub pull request diff is unavailable") from exc
+        await verify_identity()
+        try:
+            return bytes(content).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise UpstreamError("GitHub pull request diff is not UTF-8") from exc
 
     async def execute_action(
         self,

@@ -34,6 +34,7 @@ def test_openapi_contains_operation_input_schemas(
     request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
     assert "repository_id" in request_schema["properties"]
     assert request_schema["properties"]["commit_sha"]["pattern"]
+    assert "branch" in request_schema["properties"]
 
 
 def test_database_password_is_url_encoded(tmp_path) -> None:
@@ -185,8 +186,7 @@ def test_pipeline_translates_contract_memory_units_for_docker() -> None:
     )
 
     assert (
-        "String memoryLimit = dockerMemoryLimit("
-        "(runtime.memory ?: '2Gi').toString())"
+        "String memoryLimit = dockerMemoryLimit((runtime.memory ?: '2Gi').toString())"
     ) in pipeline
     assert "--memory ${shellQuote(memoryLimit)}" in pipeline
     assert "value.endsWith('Gi')" in pipeline
@@ -205,6 +205,15 @@ def test_pipeline_json_parsing_does_not_retain_a_parser_across_cps_steps() -> No
     assert "contract = parseJson(contractJson) as Map" in pipeline
     assert "artifacts: parseJson(artifactsJson)" in pipeline
     assert "result = parseJson(resultJson) as Map" in pipeline
+
+
+def test_pipeline_records_the_trusted_contract_sha() -> None:
+    pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
+        encoding="utf-8",
+    )
+
+    assert "git -C _trusted rev-parse HEAD" in pipeline
+    assert "trusted_sha: trustedSha ?: null" in pipeline
 
 
 def test_backup_and_restore_helper_images_are_digest_pinned() -> None:

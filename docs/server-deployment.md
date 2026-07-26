@@ -352,7 +352,7 @@ optional trusted default branch:
 The helper prompts without echo for the one-time gateway administrator bearer
 token. It lists existing registrations, creates or reconciles the requested
 repository with `enabled=true`, captures its UUID, and requests the initial
-multibranch scan. It is safe to rerun. The repository must already match
+managed-job reconciliation. It is safe to rerun. The repository must already match
 `GITHUB_ALLOWLIST`.
 
 For a non-default deployment URL or browser origin, set
@@ -368,6 +368,15 @@ JENKINSSERVICE_ORIGIN=https://ci.example.com \
 
 Activation reconciles the managed Jenkins job. Do not create a second
 hand-written Jenkins job for the same repository.
+
+The resulting Jenkins hierarchy is
+`repositories/OWNER--REPOSITORY/BRANCH`. Pushes to any valid branch create or
+update that branch's child Pipeline job. Pull requests run under
+`PR-NUMBER`, independently of the source branch's push history. On the first
+reconciliation after upgrading an older deployment, JenkinsService renames
+the former aggregate repository job to `OWNER--REPOSITORY--legacy`, preserves
+its Jenkins history, and rewrites stored build lookups to that legacy path.
+Quiesce repository builds before performing this one-time reconciliation.
 
 ## 7. Configure the GitHub webhook
 
@@ -401,7 +410,15 @@ security/dependency scanning, tests, coverage, packaging, and artifact
 publication. `ai-review` succeeds when the broker finds no critical issue,
 fails for a critical finding, and also fails after bounded OpenAI retries or
 invalid structured output. Non-critical AI findings are comments and summary
-content, not a blocking result.
+content, not a blocking result. Non-PR builds record the AI check as `skipped`
+in their canonical result and do not publish a successful `ai-review` commit
+status. GitHub's legacy commit-status API has no neutral/skipped state, so
+omission is the external non-applicable representation.
+
+If a PR event follows a passed branch build for the same source SHA and trusted
+target SHA, `native-ci` is republished from that result without rerunning
+repository code. The missing PR-only review still executes. A different
+trusted target SHA invalidates reuse and queues the normal `PR-NUMBER` job.
 
 After both names have appeared at least once, configure the repository's
 branch ruleset or `master` branch-protection rule:
@@ -436,6 +453,12 @@ For each PR, verify:
 - `jenkinsservice/ai-review` transitions from pending to its final state
 - the review broker publishes one batched review with its summary and any
   diff-validated inline findings
+- the canonical build result contains an `ai-review` check and a downloadable
+  `artifacts/ai-review.json` log describing the outcome and every GitHub action
+  performed or omitted
+- a PR opened after an already-passed exact-SHA branch build reuses native
+  checks only when its trusted target SHA also matches, then performs the
+  previously missing AI review
 - retrying delivery or review processing for the same repository, PR, head
   SHA, model, and prompt version does not create a duplicate review
 - build containers, networks, and workspaces are removed at completion

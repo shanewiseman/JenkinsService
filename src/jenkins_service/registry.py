@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from .models import (
+    AIReviewLog,
     AuditRecord,
     Build,
     CancelRequest,
@@ -145,7 +146,7 @@ OPERATIONS: tuple[Operation, ...] = (
         "scan_repository",
         Scope.OPERATE,
         Exposure.TOOL,
-        "Request a multibranch scan",
+        "Reconcile the managed repository and default-branch jobs",
         ScanRequest,
         OperationAccepted,
     ),
@@ -214,6 +215,17 @@ OPERATIONS: tuple[Operation, ...] = (
         "Pipeline result and artifact metadata",
         response_model=Build,
         mcp_uri="jenkinsservice://builds/{build_id}",
+    ),
+    Operation(
+        "build_ai_review_log",
+        "GET",
+        "/builds/{build_id}/artifacts/ai-review.json",
+        "build_ai_review_log",
+        Scope.READ,
+        Exposure.RESOURCE,
+        "Structured AI review log artifact",
+        response_model=AIReviewLog,
+        mcp_uri="jenkinsservice://builds/{build_id}/artifacts/ai-review",
     ),
     Operation(
         "build_log",

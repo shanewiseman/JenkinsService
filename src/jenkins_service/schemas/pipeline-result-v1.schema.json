@@ -8,6 +8,10 @@
     "schema_version": {"const": "ci.jenkinsservice.dev/result/v1"},
     "repository": {"type": "string"},
     "commit_sha": {"type": "string", "pattern": "^[a-fA-F0-9]{40}$"},
+    "trusted_sha": {
+      "type": ["string", "null"],
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
     "base_sha": {
       "type": ["string", "null"],
       "pattern": "^[a-fA-F0-9]{40}$"

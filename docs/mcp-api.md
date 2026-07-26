@@ -16,9 +16,20 @@ Published tools are:
 - `trigger_pipeline`, `retry_pipeline`, `cancel_pipeline`
 - `run_extension_action`
 
+`trigger_pipeline` accepts an optional `branch`. Omitting it selects the
+repository's trusted default branch; supplying it routes a non-PR execution
+to that branch's independent Jenkins job. A `pull_request` routes the
+execution to `PR-NUMBER` while retaining `branch` as source-branch metadata.
+
 Resources cover capabilities/version, schemas/examples, repository
 registrations, queue items, builds/checks/logs/artifacts, extension catalog
 and runs, webhook deliveries, and admin audit records.
+
+Each completed build exposes its structured review artifact at
+`/api/v1/builds/{build_id}/artifacts/ai-review.json` and
+`jenkinsservice://builds/{build_id}/artifacts/ai-review`. The artifact exists
+for passed, failed, and skipped review outcomes and states which GitHub actions
+were performed or intentionally omitted.
 
 Health (`/healthz`), readiness (`/readyz`), and GitHub webhook reception are
 transport endpoints, not service operations. Requests with an `Origin` must

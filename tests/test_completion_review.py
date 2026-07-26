@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import time
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,6 +15,7 @@ from jenkins_service.app import create_app
 from jenkins_service.clients import BrokerReview
 from jenkins_service.models import (
     BuildCompletion,
+    CheckResult,
     PipelineResult,
     Principal,
     RepositoryCreate,
@@ -154,13 +157,13 @@ def test_build_completion_authentication_replay_and_idempotency(
         for item in service.github.statuses
         if item["context"] == "jenkinsservice/native-ci" and item["state"] == "success"
     ]
-    ai = [
-        item
-        for item in service.github.statuses
-        if item["context"] == "jenkinsservice/ai-review" and item["state"] == "success"
-    ]
+    ai = [item for item in service.github.statuses if item["context"] == "jenkinsservice/ai-review"]
     assert len(native) == 1
-    assert len(ai) == 1
+    assert ai == []
+    stored = asyncio.run(store.get_build(queue.build_id))
+    assert stored.ai_review_log is not None
+    assert stored.ai_review_log.outcome == "skipped"
+    assert stored.result.checks[-1].status == "skipped"
 
 
 @pytest.mark.parametrize(
@@ -242,3 +245,188 @@ async def test_ai_review_publishes_one_validated_batch_and_deduplicates(
     ]
     assert final_statuses[0]["state"] == expected_state
     assert final_statuses[1]["state"] == expected_state
+    build = await store.get_build(queue.build_id)
+    assert build.ai_review_log is not None
+    assert build.ai_review_log.outcome == ("failed" if severity is Severity.CRITICAL else "passed")
+    assert "Actions: Published one GitHub review" in build.ai_review_log.summary
+    artifact = next(
+        item for item in build.result.artifacts if item.path == "artifacts/ai-review.json"
+    )
+    serialized = json.dumps(
+        build.ai_review_log.model_dump(mode="json"),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode()
+    assert artifact.sha256 == hashlib.sha256(serialized).hexdigest()
+    assert artifact.size == len(serialized)
+    assert build.result.checks[-1].id == "ai-review"
+    assert build.result.checks[-1].status == build.ai_review_log.outcome
+    assert await service.build_ai_review_log(principal, str(build.id)) == build.ai_review_log
+
+
+async def test_passed_push_is_reused_for_pr_while_missing_ai_review_runs(
+    service,
+    store,
+    settings,
+    authenticator,
+) -> None:
+    service.public_base_url = "https://ci.example.test"
+    principal = Principal(token_id="github-webhook", scopes={Scope.OPERATE})
+    repository = await service.register_repository(
+        principal,
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    source_queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(
+            repository_id=repository.id,
+            commit_sha="b" * 40,
+            branch="feature/reuse",
+        ),
+    )
+    assert source_queue.build_id is not None
+    source_result = PipelineResult(
+        repository=repository.full_name,
+        commit_sha="b" * 40,
+        trusted_sha="a" * 40,
+        build_id=source_queue.build_id,
+        status="passed",
+        checks=[
+            CheckResult(
+                id="native-test",
+                name="Native tests",
+                status="passed",
+                required=True,
+                exit_code=0,
+                duration_seconds=1.0,
+            )
+        ],
+    )
+    source_completion = BuildCompletion(
+        callback_id="source-completion",
+        timestamp=int(time.time()),
+        build_id=source_queue.build_id,
+        result=source_result,
+    )
+    assert await service.complete_build(principal, source_completion)
+    await service.process_ai_review(principal, source_completion)
+    source = await store.get_build(source_queue.build_id)
+    assert source.ai_review_log is not None
+    assert source.ai_review_log.outcome == "skipped"
+    assert not [
+        item for item in service.github.statuses if item["context"] == "jenkinsservice/ai-review"
+    ]
+
+    service.review_broker = FakeReviewBroker(Severity.HIGH)  # type: ignore[assignment]
+    reused_queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(
+            repository_id=repository.id,
+            commit_sha="b" * 40,
+            base_sha="a" * 40,
+            branch="feature/reuse",
+            pull_request=17,
+        ),
+    )
+
+    assert reused_queue.state == "reused"
+    assert len(service.jenkins.triggers) == 1
+    assert reused_queue.build_id is not None
+    reused = await store.get_build(reused_queue.build_id)
+    assert reused.reused_from_build_id == source.id
+    assert reused.result.status == "passed"
+    assert [item.id for item in reused.result.checks] == ["native-test", "ai-review"]
+    assert reused.result.checks[-1].status == "passed"
+    assert reused.ai_review_log is not None
+    assert reused.ai_review_log.outcome == "passed"
+    artifact = next(
+        item for item in reused.result.artifacts if item.path == "artifacts/ai-review.json"
+    )
+    assert str(artifact.download_url).endswith(
+        f"/api/v1/builds/{reused.id}/artifacts/ai-review.json"
+    )
+    assert len(service.github.reviews) == 1
+    assert service.github.pull_request_diffs == [
+        {
+            "repository": "allowed/project",
+            "pull_number": 17,
+            "base_sha": "a" * 40,
+            "head_sha": "b" * 40,
+            "max_bytes": 200_000,
+        }
+    ]
+    native_reuse = [
+        item
+        for item in service.github.statuses
+        if item["context"] == "jenkinsservice/native-ci" and "reused" in item["description"].lower()
+    ]
+    assert len(native_reuse) == 1
+
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://ci.example.test",
+    ) as client:
+        response = await client.get(
+            f"/api/v1/builds/{reused.id}/artifacts/ai-review.json",
+            headers={"Authorization": "Bearer read-token"},
+        )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "passed"
+    assert hashlib.sha256(response.content).hexdigest() == artifact.sha256
+
+
+async def test_passed_push_is_not_reused_when_trusted_base_changed(
+    service,
+    store,
+) -> None:
+    principal = Principal(token_id="github-webhook", scopes={Scope.OPERATE})
+    repository = await service.register_repository(
+        principal,
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    source_queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(
+            repository_id=repository.id,
+            commit_sha="b" * 40,
+            branch="feature/stale-policy",
+        ),
+    )
+    assert source_queue.build_id is not None
+    completion = BuildCompletion(
+        callback_id="source-stale-policy",
+        timestamp=int(time.time()),
+        build_id=source_queue.build_id,
+        result=PipelineResult(
+            repository=repository.full_name,
+            commit_sha="b" * 40,
+            trusted_sha="c" * 40,
+            build_id=source_queue.build_id,
+            status="passed",
+        ),
+    )
+    assert await service.complete_build(principal, completion)
+
+    pr_queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(
+            repository_id=repository.id,
+            commit_sha="b" * 40,
+            base_sha="a" * 40,
+            branch="feature/stale-policy",
+            pull_request=18,
+        ),
+    )
+
+    assert pr_queue.state == "queued"
+    assert len(service.jenkins.triggers) == 2
+    assert pr_queue.build_id is not None
+    pr_build = await store.get_build(pr_queue.build_id)
+    assert pr_build.reused_from_build_id is None

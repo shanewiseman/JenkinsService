@@ -150,6 +150,31 @@ async def test_postgres_queue_and_build_columns_use_model_timestamps() -> None:
     assert build_args[3:] == (created_at, updated_at)
 
 
+async def test_build_job_paths_can_be_rebound_after_hierarchy_migration() -> None:
+    store = MemoryStore()
+    repository = await store.create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    build = Build(
+        repository_id=repository.id,
+        jenkins_job="repositories/allowed--project",
+        result=PipelineResult(
+            repository=repository.full_name,
+            commit_sha="a" * 40,
+            status="passed",
+        ),
+    )
+    await store.save_build(build)
+
+    await store.rebind_jenkins_job(
+        repository.id,
+        "repositories/allowed--project",
+        "repositories/allowed--project--legacy",
+    )
+
+    assert (await store.get_build(build.id)).jenkins_job.endswith("--legacy")
+
+
 async def test_postgres_ordered_audit_columns_use_model_timestamps() -> None:
     pool = RecordingPool()
     store = PostgresStore("postgresql://unused")
