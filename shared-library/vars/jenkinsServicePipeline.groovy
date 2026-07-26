@@ -1,3 +1,4 @@
+import com.cloudbees.groovy.cps.NonCPS
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurperClassic
 
@@ -47,7 +48,8 @@ PY
                 '''
             }
 
-            contract = new JsonSlurperClassic().parseText(readFile('_pipeline.json')) as Map
+            String contractJson = readFile('_pipeline.json')
+            contract = parseJson(contractJson) as Map
             List contractSteps = ['standards', 'tests', 'custom'].collectMany { group ->
                 (contract.steps[group] ?: []) as List
             }
@@ -162,6 +164,7 @@ for root_name in ("artifacts", "dist"):
 Path("../_artifacts.json").write_text(json.dumps(artifacts))
 PY
                     '''
+                    String artifactsJson = readFile('../_artifacts.json')
                     Map result = [
                         schema_version: 'ci.jenkinsservice.dev/result/v1',
                         repository: settings.repository,
@@ -173,7 +176,7 @@ PY
                         started_at: new Date(currentBuild.startTimeInMillis).format("yyyy-MM-dd'T'HH:mm:ssXXX"),
                         completed_at: new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX"),
                         checks: checks,
-                        artifacts: new JsonSlurperClassic().parseText(readFile('../_artifacts.json')),
+                        artifacts: parseJson(artifactsJson),
                         extension_runs: []
                     ]
                     writeFile file: 'artifacts/pipeline-result.json', text: JsonOutput.prettyPrint(JsonOutput.toJson(result))
@@ -226,9 +229,8 @@ private int notifyBuildCompletion(Map contract, Map settings) {
     }
     Map result
     if (fileExists('source/artifacts/pipeline-result.json')) {
-        result = new JsonSlurperClassic().parseText(
-            readFile('source/artifacts/pipeline-result.json')
-        ) as Map
+        String resultJson = readFile('source/artifacts/pipeline-result.json')
+        result = parseJson(resultJson) as Map
     } else {
         result = [
             schema_version: 'ci.jenkinsservice.dev/result/v1',
@@ -356,6 +358,11 @@ PY
         """.stripIndent(),
         returnStatus: true
     )
+}
+
+@NonCPS
+private Object parseJson(String text) {
+    return new JsonSlurperClassic().parseText(text)
 }
 
 private Map runContractStep(Map step, Map runtime, String buildLabel, String buildNetwork) {
