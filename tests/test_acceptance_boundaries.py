@@ -179,6 +179,22 @@ def test_pipeline_contract_commands_and_sarif_publication_use_valid_step_syntax(
     assert "recordIssues enabledForFailure: true, sarif(" not in pipeline
 
 
+def test_pipeline_translates_contract_memory_units_for_docker() -> None:
+    pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
+        encoding="utf-8",
+    )
+
+    assert (
+        "String memoryLimit = dockerMemoryLimit("
+        "(runtime.memory ?: '2Gi').toString())"
+    ) in pipeline
+    assert "--memory ${shellQuote(memoryLimit)}" in pipeline
+    assert "value.endsWith('Gi')" in pipeline
+    assert "value.endsWith('Mi')" in pipeline
+    assert "value.substring(0, value.length() - 2) + 'g'" in pipeline
+    assert "value.substring(0, value.length() - 2) + 'm'" in pipeline
+
+
 def test_pipeline_json_parsing_does_not_retain_a_parser_across_cps_steps() -> None:
     pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
         encoding="utf-8",
