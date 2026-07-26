@@ -88,6 +88,68 @@ def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
     assert "diff: reviewDiff" in pipeline
 
 
+def test_compose_routes_only_public_services_through_traefik() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    def labels(service_name: str) -> dict[str, str]:
+        return dict(label.split("=", 1) for label in services[service_name].get("labels", []))
+
+    routed_services = {
+        name for name, service in services.items() if labels(name).get("traefik.enable") == "true"
+    }
+    assert routed_services == {"jenkins", "gateway"}
+    assert {name for name in services if labels(name).get("traefik.enable") == "false"} == set(
+        services
+    ) - routed_services
+    assert {
+        name for name, service in services.items() if "dmz" in service.get("networks", {})
+    } == routed_services
+    assert compose["networks"]["dmz"] == {
+        "external": True,
+        "name": "${DMZ_NETWORK:-dmz_internal}",
+    }
+
+    jenkins_labels = labels("jenkins")
+    gateway_labels = labels("gateway")
+    assert jenkins_labels["traefik.docker.network"] == ("${DMZ_NETWORK:-dmz_internal}")
+    assert gateway_labels["traefik.docker.network"] == ("${DMZ_NETWORK:-dmz_internal}")
+    assert jenkins_labels["traefik.http.routers.jenkinsservice-jenkins.tls"] == "true"
+    assert gateway_labels["traefik.http.routers.jenkinsservice-gateway.tls"] == "true"
+    assert jenkins_labels["traefik.http.routers.jenkinsservice-jenkins.rule"] == (
+        "Host(`${JENKINS_HOST:?Set JENKINS_HOST to the public hostname}`) "
+        "&& (Path(`/jenkins`) || PathPrefix(`/jenkins/`))"
+    )
+    assert (
+        gateway_labels["traefik.http.routers.jenkinsservice-gateway.rule"]
+        == "Host(`${JENKINS_HOST:?Set JENKINS_HOST to the public hostname}`)"
+    )
+    assert jenkins_labels["traefik.http.routers.jenkinsservice-jenkins.priority"] == "200"
+    assert gateway_labels["traefik.http.routers.jenkinsservice-gateway.priority"] == "1"
+    assert (
+        jenkins_labels["traefik.http.services.jenkinsservice-jenkins.loadbalancer.server.port"]
+        == "8080"
+    )
+    assert (
+        gateway_labels["traefik.http.services.jenkinsservice-gateway.loadbalancer.server.port"]
+        == "8000"
+    )
+    assert (
+        jenkins_labels[
+            "traefik.http.middlewares.jenkinsservice-jenkins-slash.redirectregex.replacement"
+        ]
+        == "https://$${1}/jenkins/"
+    )
+    assert services["jenkins"]["ports"] == ["127.0.0.1:${JENKINS_PORT:-18080}:8080"]
+    assert "expose" not in services["jenkins"]
+    assert services["gateway"]["ports"] == ["127.0.0.1:${API_PORT:-18000}:8000"]
+
+    casc = (ROOT / "docker/jenkins/casc.yaml").read_text(encoding="utf-8")
+    agent_start = (ROOT / "docker/agent/start-agent.sh").read_text(encoding="utf-8")
+    assert "slaveAgentPort: -1" in casc
+    assert "-webSocket" in agent_start
+
+
 def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:
     pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
         encoding="utf-8",

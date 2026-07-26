@@ -12,6 +12,7 @@ while [ "$attempt" -lt 60 ]; do
       -url "$JENKINS_URL" \
       -name "$JENKINS_AGENT_NAME" \
       -secret "$secret" \
+      -webSocket \
       -workDir /home/jenkins/agent
   fi
   attempt=$((attempt + 1))

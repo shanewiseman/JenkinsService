@@ -1,54 +1,70 @@
 # Production deployment: jenkins.shanewiseman.co
 
-This guide deploys one JenkinsService host with these public endpoints:
+This guide deploys JenkinsService behind an existing Traefik Docker gateway.
+The checked-in Compose labels publish these routes:
 
-| Service | Public URL | Host listener |
+| Public route | Traefik router | Backend |
 | --- | --- | --- |
-| Gateway | `https://jenkins.shanewiseman.co` | `127.0.0.1:18000` |
-| REST API | `https://jenkins.shanewiseman.co/api/v1` | `127.0.0.1:18000` |
-| MCP | `https://jenkins.shanewiseman.co/mcp` | `127.0.0.1:18000` |
-| GitHub webhook | `https://jenkins.shanewiseman.co/webhooks/github` | `127.0.0.1:18000` |
-| Jenkins | `https://jenkins.shanewiseman.co/jenkins/` | `127.0.0.1:18080` |
+| `https://jenkins.shanewiseman.co/jenkins/` | `jenkinsservice-jenkins` | `jenkins:8080` |
+| All other paths on `jenkins.shanewiseman.co` | `jenkinsservice-gateway` | `gateway:8000` |
 
-Nginx is the only public application listener. PostgreSQL, Docker-in-Docker
-(DinD), the Jenkins agent port, the extension runner, and the review broker
-must remain unexposed. Do not add host port mappings for them and never mount
-the host Docker socket into this stack.
+The Jenkins router has higher priority and preserves the `/jenkins/` prefix.
+The catch-all gateway router serves REST under `/api/v1`, MCP under `/mcp`, the
+GitHub webhook under `/webhooks/github`, and health endpoints. Traefik is the
+only public application listener. PostgreSQL, Docker-in-Docker (DinD), the
+extension runner, and review broker remain unexposed. The Jenkins inbound-agent
+TCP listener is disabled; the orchestrator connects internally over WebSocket.
+Jenkins and gateway retain loopback host bindings for local diagnostics only.
+
+Both routed services join the operator-managed external Docker network named by
+`DMZ_NETWORK`. This label-based configuration assumes Traefik discovers the
+containers through the same Docker provider and can join that network. A
+Traefik instance on a separate Docker daemon requires an operator-managed
+cross-host provider/overlay design; a local bridge network cannot span hosts.
 
 ## 1. Prepare the server
 
 Use a dedicated, fully patched x86-64 Linux server. The supported baseline is:
 
 - Docker Engine 29 or newer, with the Compose plugin 5 or newer
-- OpenSSL, Nginx, Certbot, and the Certbot Nginx plugin
-- a public IPv4 or IPv6 address reachable on TCP 80 and 443
-- an `A`/`AAAA` record for `jenkins.shanewiseman.co` pointing to that address
+- OpenSSL and an existing Traefik deployment with the Docker provider enabled
+- a Traefik HTTPS entrypoint and ACME certificate resolver
+- an external Docker network shared with Traefik, normally `dmz_internal`
+- a public IPv4 or IPv6 address reachable by Traefik on TCP 80 and 443
+- an `A`/`AAAA` record for `jenkins.shanewiseman.co` pointing to Traefik
 - an SSD-backed filesystem supported by Docker `overlay2`
 - enough capacity for Jenkins history, PostgreSQL, artifacts, and the DinD
   image cache; 4 CPU cores, 8 GiB RAM, and 100 GiB free disk is a practical
   starting point, not a substitute for workload-specific sizing
 
 Install Docker from Docker's official repository so the required Engine and
-Compose versions are available. On Debian or Ubuntu, install the remaining
-packages with:
-
-```bash
-sudo apt-get update
-sudo apt-get install --yes openssl nginx certbot python3-certbot-nginx
-```
-
-Verify the actual server-side versions and storage before continuing:
+Compose versions are available. Verify the actual versions, Traefik network,
+and storage before continuing:
 
 ```bash
 docker version --format 'Docker Engine {{.Server.Version}}'
 docker compose version
 openssl version
-nginx -v
-certbot --version
+docker network inspect dmz_internal >/dev/null
 docker info --format 'driver={{.Driver}} root={{.DockerRootDir}}'
 df -h /var/lib/docker
 df -i /var/lib/docker
 ```
+
+If the external network does not exist yet, create it once and attach the
+Traefik container to it before starting JenkinsService:
+
+```bash
+docker network create dmz_internal
+docker network connect dmz_internal TRAEFIK_CONTAINER
+```
+
+Replace `TRAEFIK_CONTAINER` with the actual container name. Skip the create or
+connect command when that state already exists. If `.env` uses a non-default
+`DMZ_NETWORK`, substitute that exact value in these commands.
+
+Do not let Compose create a project-scoped substitute; the network is declared
+`external` so its resolved name must match Traefik's network exactly.
 
 Docker access is root-equivalent. Limit membership in the `docker` group to
 administrators of this service. Clone the reviewed JenkinsService commit into
@@ -58,8 +74,9 @@ repository root.
 
 ### Firewall and host exposure
 
-Allow SSH only from the administrative network where possible, plus public
-HTTP and HTTPS. For example, when UFW is the host firewall:
+Allow SSH only from the administrative network where possible. Allow public
+HTTP and HTTPS on the Traefik gateway host; when Traefik shares this host, an
+example UFW policy is:
 
 ```bash
 sudo ufw allow from ADMIN_CIDR to any port 22 proto tcp
@@ -70,10 +87,13 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-Replace `ADMIN_CIDR` before running the first command. If the provider has a
-security group or cloud firewall, enforce the same policy there. Do not allow
-TCP 18000, 18080, 2376, 50000, 5432, 8090, or 8100 from another host.
-Compose intentionally binds 18000 and 18080 to `127.0.0.1`.
+Replace `ADMIN_CIDR` before running the first command. If Traefik is on a
+separate gateway host, apply public 80/443 rules there instead. If the provider
+has a security group or cloud firewall, enforce the same policy there. Do not
+allow TCP 18000, 18080, 2376, 5432, 8090, or 8100 from another host. The
+Jenkins TCP agent listener on port 50000 is disabled. Compose intentionally
+binds 18000 and 18080 to `127.0.0.1`; Traefik reaches the container ports
+through the external DMZ network.
 
 ## 2. Bootstrap configuration and secrets
 
@@ -102,6 +122,10 @@ Set these exact deployment values in `.env`:
 ```dotenv
 PUBLIC_BASE_URL=https://jenkins.shanewiseman.co
 JENKINS_PUBLIC_URL=https://jenkins.shanewiseman.co/jenkins/
+JENKINS_HOST=jenkins.shanewiseman.co
+DMZ_NETWORK=dmz_internal
+TRAEFIK_ENTRYPOINT=websecure
+TRAEFIK_CERT_RESOLVER=myresolver
 JENKINS_PORT=18080
 API_PORT=18000
 
@@ -125,11 +149,13 @@ EXTENSION_ALLOWLIST=
 RATE_LIMIT_PER_MINUTE=120
 ```
 
-Keep the internal `JENKINS_URL`, `DATABASE_URL`,
-`EXTENSION_RUNNER_URL`, and secret-file paths from `.env.example`. In
-particular, the internal controller URL uses the Compose service name and the
-`/jenkins/` prefix; it is not the public URL. Do not put an OpenAI key, GitHub
-PAT, Jenkins token, webhook secret, callback secret, or gateway bearer token
+Set `DMZ_NETWORK`, `TRAEFIK_ENTRYPOINT`, and `TRAEFIK_CERT_RESOLVER` to the
+exact names already configured on the Traefik deployment. Keep the internal
+`JENKINS_URL`, `DATABASE_URL`, `EXTENSION_RUNNER_URL`, and secret-file paths
+from `.env.example`. In particular, the internal controller URL uses the
+Compose service name and the `/jenkins/` prefix; it is not the public URL. Do
+not put an OpenAI key, GitHub PAT, Jenkins token, webhook secret, callback
+secret, or gateway bearer token
 in `.env`.
 
 ### Secret inventory
@@ -193,7 +219,7 @@ affected service if startup fails:
 docker compose logs --tail=200 SERVICE
 ```
 
-Use these local checks before configuring Nginx:
+Use these local checks before validating Traefik routing:
 
 ```bash
 curl --fail http://127.0.0.1:18000/healthz
@@ -238,72 +264,60 @@ Jenkins is configured by JCasC, not through the setup wizard. Log in at
 Do not add the write PAT, OpenAI key, Docker client certificates, webhook
 secret, or gateway tokens to repository jobs.
 
-## 4. Issue the certificate and enable Nginx
+## 4. Enable Traefik routing and TLS
 
-Confirm DNS reaches this host before certificate issuance:
+Confirm DNS resolves to the Traefik gateway and that the configured external
+network exists:
 
 ```bash
 getent ahosts jenkins.shanewiseman.co
+docker network inspect dmz_internal
 ```
 
-For the first certificate, enable a minimal HTTP-only Nginx virtual host for
-`jenkins.shanewiseman.co`, verify it with `sudo nginx -t`, and request:
+Use the `DMZ_NETWORK` value from `.env` instead of `dmz_internal` if it was
+customized. The Traefik container must appear on that network. Its Docker
+provider should use `exposedByDefault=false`; JenkinsService also explicitly
+labels every internal service with `traefik.enable=false` and opts in only the
+`jenkins` and `gateway` containers. Traefik must already define the entrypoint
+and certificate resolver selected by
+`TRAEFIK_ENTRYPOINT` and `TRAEFIK_CERT_RESOLVER`. If HTTP-to-HTTPS redirection
+is desired, configure it on Traefik's HTTP entrypoint; this stack publishes only
+TLS routers, matching the existing gateway pattern.
+
+The Compose labels create:
+
+- `jenkinsservice-jenkins`: host plus exact `/jenkins` or `/jenkins/` prefix,
+  priority 200, backend port 8080, and a permanent `/jenkins` to `/jenkins/`
+  redirect middleware
+- `jenkinsservice-gateway`: host-wide fallback, priority 1, backend port 8000
+- explicit service bindings so Traefik routes only to HTTP ports 8080 and 8000
+- TLS and the selected ACME certificate resolver on both routers
+
+Reconcile the routed containers after changing `.env` or labels:
 
 ```bash
-sudo certbot certonly --nginx -d jenkins.shanewiseman.co
+docker compose config --quiet
+docker compose up -d --force-recreate jenkins gateway
+docker compose ps
 ```
 
-Certbot must create:
-
-```text
-/etc/letsencrypt/live/jenkins.shanewiseman.co/fullchain.pem
-/etc/letsencrypt/live/jenkins.shanewiseman.co/privkey.pem
-```
-
-After issuance, install the reviewed template and replace the temporary
-virtual host:
+Inspect Traefik's dashboard or API and confirm both routers and services are
+healthy. A 404 normally means the router was not discovered; a 502 normally
+means Traefik chose the wrong network or cannot reach the declared backend
+port. Verify public routing and prefix preservation:
 
 ```bash
-sudo install -m 0644 \
-  deploy/nginx/jenkins.shanewiseman.co.conf \
-  /etc/nginx/sites-available/jenkins.shanewiseman.co
-sudo ln -sfn \
-  /etc/nginx/sites-available/jenkins.shanewiseman.co \
-  /etc/nginx/sites-enabled/jenkins.shanewiseman.co
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-Disable any default virtual host that conflicts with this hostname. The
-template redirects HTTP to HTTPS, forwards `/jenkins/` without stripping its
-prefix, and forwards gateway/API/MCP/webhook traffic to port 18000. It also
-preserves `Host`, `X-Forwarded-*`, request IDs, streaming, and connection
-upgrades.
-
-Verify the public boundary:
-
-```bash
-curl --fail --head http://jenkins.shanewiseman.co/jenkins/
+curl --fail --location https://jenkins.shanewiseman.co/jenkins >/dev/null
 curl --fail https://jenkins.shanewiseman.co/healthz
 curl --fail https://jenkins.shanewiseman.co/readyz
-curl --fail --location \
-  https://jenkins.shanewiseman.co/jenkins/login >/dev/null
+curl --fail --location https://jenkins.shanewiseman.co/jenkins/login >/dev/null
 ```
 
-The HTTP request must redirect to HTTPS. Jenkins redirects must remain under
-`/jenkins/`; a redirect to `/login` indicates a context-path mismatch.
-
-Enable and test automatic renewal:
-
-```bash
-sudo systemctl enable --now certbot.timer
-systemctl list-timers certbot.timer
-sudo certbot renew --dry-run
-```
-
-Keep TCP 80 open so the HTTP-01 renewal challenge can succeed. Monitor the
-timer and certificate expiry; do not treat the initial successful issuance as
-proof that renewal works.
+Jenkins redirects must remain under `/jenkins/`; a redirect to `/login`
+indicates a context-path mismatch. Confirm the certificate is issued by the
+configured resolver and monitor Traefik's ACME storage, renewal logs, and
+certificate expiry. Do not run a separate certificate lifecycle for this
+hostname; Traefik owns issuance and renewal.
 
 ## 5. Create the GitHub credentials
 
@@ -455,9 +469,10 @@ statuses pass.
 
 ## 10. Operations, backup, and upgrades
 
-Monitor `docker compose ps`, `/readyz`, Jenkins queue/agent state, disk and
-inode use, certificate expiry, webhook failures, rejected callbacks, review
-retries, audit records, and DinD cache growth. Compose log rotation bounds
+Monitor `docker compose ps`, Traefik router/service health, `/readyz`, Jenkins
+queue/agent state, disk and inode use, ACME renewal and certificate expiry,
+webhook failures, rejected callbacks, review retries, audit records, and DinD
+cache growth. Compose log rotation bounds
 container JSON logs, but Jenkins artifacts, PostgreSQL, and Docker volumes
 still require capacity alerts.
 

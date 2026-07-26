@@ -3,12 +3,14 @@
 ## Prerequisites
 
 - x86-64 Linux with Docker Engine 29+ and Compose 5+
-- DNS and an HTTPS reverse proxy
+- DNS and a Traefik Docker gateway with an HTTPS entrypoint/certificate resolver
 - a read-only GitHub fine-grained PAT for metadata/checkout
 - a distinct write PAT scoped only to extension-declared actions
 
-Copy `.env.example` to `.env`. `PUBLIC_BASE_URL` must use HTTPS. Keep Jenkins
-and API host bindings on loopback; publish only through the proxy.
+Copy `.env.example` to `.env`. `PUBLIC_BASE_URL` must use HTTPS. Set the exact
+Traefik DMZ network, entrypoint, certificate-resolver, and hostname names. Keep
+Jenkins and API host bindings on loopback; Compose publishes only the Jenkins
+and gateway containers to Traefik through the external DMZ network.
 
 Run `scripts/bootstrap.sh`, then add both PATs to their files under `secrets/`.
 Secret files are excluded from Git. The `api_tokens` secret contains lines in
