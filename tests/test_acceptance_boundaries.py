@@ -49,15 +49,43 @@ def test_database_password_is_url_encoded(tmp_path) -> None:
     assert settings.postgres_dsn().endswith("password=a%2Bb%26c%3Fd")
 
 
-def test_compose_mounts_github_secrets_only_where_used() -> None:
+def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    jenkins_secrets = set(compose["services"]["jenkins"]["secrets"])
-    gateway_secrets = set(compose["services"]["gateway"]["secrets"])
+    services = compose["services"]
+    secret_sets = {name: set(service.get("secrets", [])) for name, service in services.items()}
 
-    assert "github_read_pat" in jenkins_secrets
-    assert "github_webhook_secret" not in jenkins_secrets
-    assert "github_read_pat" not in gateway_secrets
-    assert {"github_write_pat", "github_webhook_secret"} <= gateway_secrets
+    assert "github_read_pat" in secret_sets["jenkins"]
+    assert "github_webhook_secret" not in secret_sets["jenkins"]
+    assert "github_read_pat" not in secret_sets["gateway"]
+    assert {"github_write_pat", "github_webhook_secret"} <= secret_sets["gateway"]
+    assert secret_sets["review-broker"] == {
+        "openai_api_key",
+        "review_broker_token",
+    }
+    assert "openai_api_key" not in secret_sets["gateway"]
+    assert secret_sets["extension-runner"] == set()
+    assert secret_sets["orchestrator"] == {
+        "jenkins_api_token",
+        "build_callback_secret",
+    }
+
+    pipeline = (ROOT / "shared-library/vars/jenkinsServicePipeline.groovy").read_text(
+        encoding="utf-8"
+    )
+    for forbidden in (
+        "openai_api_key",
+        "github_read_pat",
+        "github_write_pat",
+        "jenkins_api_token",
+        "github_webhook_secret",
+        "build_callback_secret:/workspace",
+        "/certs/client:/workspace",
+    ):
+        assert forbidden not in pipeline
+    assert '"git", "-C", "source", "diff", "--no-ext-diff", "--unified=3"' in pipeline
+    assert "resource.RLIMIT_FSIZE" in pipeline
+    assert "REVIEW_BASE_SHA" in pipeline
+    assert "diff: reviewDiff" in pipeline
 
 
 def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:
@@ -72,8 +100,7 @@ def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:
 
 def test_backup_and_restore_helper_images_are_digest_pinned() -> None:
     alpine_image = (
-        "alpine:3.22.1@sha256:"
-        "4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+        "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
     )
 
     for script_name in ("backup.sh", "restore.sh"):

@@ -81,12 +81,15 @@ async def dispatch_github_webhook(
         if not isinstance(pull_request, dict):
             return
         head = pull_request.get("head")
-        if not isinstance(head, dict):
+        base = pull_request.get("base")
+        if not isinstance(head, dict) or not isinstance(base, dict):
             return
         commit_sha = _commit_sha(head.get("sha"))
+        base_sha = _commit_sha(base.get("sha"))
         pull_request_number = pull_request.get("number")
         if (
             commit_sha is None
+            or base_sha is None
             or not isinstance(pull_request_number, int)
             or isinstance(pull_request_number, bool)
             or pull_request_number < 1
@@ -99,6 +102,7 @@ async def dispatch_github_webhook(
             TriggerRequest(
                 repository_id=repository.id,
                 commit_sha=commit_sha,
+                base_sha=base_sha,
                 pull_request=pull_request_number,
             ),
         )

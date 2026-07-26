@@ -70,7 +70,8 @@ async def test_build_read_reconciles_queue_and_canonical_result(
     service.jenkins.result_bytes = (
         b'{"schema_version":"ci.jenkinsservice.dev/result/v1",'
         b'"repository":"allowed/project","commit_sha":"'
-        + b"a" * 40
+        + b"a"
+        * 40
         + b'","pull_request":null,"status":"passed","checks":[],'
         b'"artifacts":[],"extension_runs":[]}'
     )

@@ -27,6 +27,8 @@ create_secret secrets/postgres_password 32
 create_secret secrets/jenkins_admin_password 24
 create_secret secrets/jenkins_api_token 32
 create_secret secrets/github_webhook_secret 32
+create_secret secrets/build_callback_secret 32
+create_secret secrets/review_broker_token 32
 
 if [ ! -s secrets/api_tokens ]; then
   api_token="$(openssl rand -hex 32)"
@@ -37,7 +39,7 @@ if [ ! -s secrets/api_tokens ]; then
   echo "API bearer token (shown once): $api_token"
 fi
 
-for pat in secrets/github_read_pat secrets/github_write_pat; do
+for pat in secrets/github_read_pat secrets/github_write_pat secrets/openai_api_key; do
   if [ ! -s "$pat" ]; then
     : >"$pat"
     chmod 600 "$pat"
@@ -51,5 +53,6 @@ if [ ! -f .env ]; then
 fi
 
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://bootstrap.invalid}" \
+JENKINS_PUBLIC_URL="${JENKINS_PUBLIC_URL:-https://bootstrap.invalid/jenkins/}" \
   docker compose config --quiet
 echo "Compose configuration is valid."

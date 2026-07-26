@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     github_read_token_file: Path = Path("/run/secrets/github_read_pat")
     github_write_token_file: Path = Path("/run/secrets/github_write_pat")
     github_webhook_secret_file: Path = Path("/run/secrets/github_webhook_secret")
+    build_callback_secret_file: Path = Path("/run/secrets/build_callback_secret")
+    review_broker_token_file: Path = Path("/run/secrets/review_broker_token")
+    review_broker_url: str = "http://review-broker:8100"
+    build_callback_max_age_seconds: int = Field(default=300, ge=30, le=3600)
+    review_prompt_version: str = Field(default="v1", pattern=r"^[A-Za-z0-9_.-]+$")
+    openai_model: str = "gpt-5.6-terra"
     github_api_url: str = "https://api.github.com"
     github_web_url: str = "https://github.com"
     github_allowlist: CsvList = Field(default_factory=list)

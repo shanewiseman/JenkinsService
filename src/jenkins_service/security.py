@@ -79,6 +79,12 @@ def verify_webhook_signature(secret: str, body: bytes, signature: str | None) ->
     return hmac.compare_digest(expected, signature)
 
 
+def verify_hmac_signature(secret: str, body: bytes, signature: str | None) -> bool:
+    """Verify a canonical ``sha256=<hex>`` signature in constant time."""
+
+    return verify_webhook_signature(secret, body, signature)
+
+
 class SlidingWindowLimiter:
     def __init__(self, limit: int, window_seconds: int = 60) -> None:
         self.limit = limit
@@ -104,9 +110,7 @@ class Redactor:
     def redact(self, value: str) -> str:
         for pattern in self.patterns:
             value = pattern.sub(
-                lambda match: (
-                    ((match.group(1) or "") if match.lastindex else "") + "[REDACTED]"
-                ),
+                lambda match: (((match.group(1) or "") if match.lastindex else "") + "[REDACTED]"),
                 value,
             )
         return value

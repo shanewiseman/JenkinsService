@@ -53,8 +53,9 @@ services:
       JAVA_OPTS: >-
         -Djenkins.install.runSetupWizard=false
         -Dhudson.model.DirectoryBrowserSupport.CSP=sandbox
+      JENKINS_OPTS: --prefix=/jenkins
       JENKINS_ADMIN_USER: admin
-      JENKINS_PUBLIC_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}/jenkins/
+      JENKINS_PUBLIC_URL: ${JENKINS_PUBLIC_URL:?JENKINS_PUBLIC_URL is required}
       JENKINS_AGENT_EXECUTORS: ${JENKINS_AGENT_EXECUTORS:-4}
     secrets:
       - jenkins_admin_password
@@ -72,7 +73,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - curl --fail --silent http://localhost:8080/login >/dev/null
+        - curl --fail --silent --location http://localhost:8080/jenkins/login >/dev/null
       interval: 15s
       timeout: 5s
       retries: 30
@@ -90,13 +91,15 @@ services:
       jenkins:
         condition: service_healthy
     environment:
-      JENKINS_URL: http://jenkins:8080
+      JENKINS_URL: http://jenkins:8080/jenkins/
       JENKINS_AGENT_NAME: orchestrator
+      BUILD_CALLBACK_URL: http://gateway:8000/internal/build-completions
       DOCKER_HOST: tcp://docker:2376
       DOCKER_TLS_VERIFY: "1"
       DOCKER_CERT_PATH: /certs/client
     secrets:
       - jenkins_api_token
+      - build_callback_secret
     volumes:
       - docker-certs-client:/certs/client:ro
       - agent-workspace:/home/jenkins/agent
@@ -174,6 +177,50 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  review-broker:
+    build:
+      context: .
+      dockerfile: docker/review-broker/Dockerfile
+    image: jenkinsservice-review-broker:0.1.0
+    environment:
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-terra}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-4096}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-60}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-3}
+      OPENAI_RETRY_BASE_SECONDS: ${OPENAI_RETRY_BASE_SECONDS:-0.25}
+      REVIEW_PROMPT_VERSION: ${REVIEW_PROMPT_VERSION:-v1}
+      REVIEW_MAX_DIFF_BYTES: ${REVIEW_MAX_DIFF_BYTES:-250000}
+      REVIEW_MAX_CONTEXT_BYTES: ${REVIEW_MAX_CONTEXT_BYTES:-50000}
+      REVIEW_MAX_OUTPUT_BYTES: ${REVIEW_MAX_OUTPUT_BYTES:-64000}
+    secrets:
+      - openai_api_key
+      - review_broker_token
+    networks:
+      control: {}
+      egress: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8100/healthz')
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    logging: *default-logging
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
@@ -186,17 +233,22 @@ services:
         condition: service_healthy
       extension-runner:
         condition: service_healthy
+      review-broker:
+        condition: service_healthy
     env_file: .env
     environment:
       DATABASE_URL: postgresql://jenkinsservice@postgres:5432/jenkinsservice
-      JENKINS_URL: http://jenkins:8080
+      JENKINS_URL: http://jenkins:8080/jenkins/
       EXTENSION_RUNNER_URL: http://extension-runner:8090
+      REVIEW_BROKER_URL: http://review-broker:8100
     secrets:
       - postgres_password
       - jenkins_api_token
       - api_tokens
       - github_write_pat
       - github_webhook_secret
+      - build_callback_secret
+      - review_broker_token
     ports:
       - "127.0.0.1:${API_PORT:-18000}:8000"
     networks:
@@ -240,6 +292,12 @@ secrets:
     file: ./secrets/github_write_pat
   github_webhook_secret:
     file: ./secrets/github_webhook_secret
+  build_callback_secret:
+    file: ./secrets/build_callback_secret
+  review_broker_token:
+    file: ./secrets/review_broker_token
+  openai_api_key:
+    file: ./secrets/openai_api_key
 
 volumes:
   docker-certs-ca:

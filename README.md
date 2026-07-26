@@ -55,7 +55,7 @@ Consumer repositories include a thin root `Jenkinsfile`:
 @Library('jenkins-service-contract@v1') _
 jenkinsServicePipeline(
     repositoryUrl: 'https://github.com/example/project.git',
-    trustedBranch: 'main',
+    trustedBranch: 'master',
     repository: 'example/project'
 )
 ```

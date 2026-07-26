@@ -5,31 +5,41 @@ runtime:
   cpu: 2
   memory: 2Gi
   pids: 512
-  network: egress
+  network: none
   environment:
     HOME: /tmp
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     PYTHONDONTWRITEBYTECODE: "1"
 steps:
   standards:
-    - id: bootstrap-ruff
-      name: Locked dependency bootstrap and Ruff
+    - id: dependency-bootstrap
+      name: Locked dependency bootstrap
+      network: egress
       command:
         - /bin/sh
         - -c
         - >-
           python -m venv .ci-venv &&
           .ci-venv/bin/python -m pip install --requirement requirements-dev.lock &&
-          .ci-venv/bin/python -m pip install --no-deps --no-build-isolation -e . &&
-          .ci-venv/bin/python -m ruff check .
+          .ci-venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+      reports: []
+    - id: ruff
+      name: Ruff
+      network: none
+      command:
+        - /bin/sh
+        - -c
+        - .ci-venv/bin/python -m ruff check . && .ci-venv/bin/python -m ruff format --check .
       reports: []
     - id: typecheck
       name: Mypy
+      network: none
       command: [".ci-venv/bin/python", "-m", "mypy", "src"]
       reports: []
   tests:
     - id: pytest
       name: Pytest
+      network: none
       command:
         - .ci-venv/bin/python
         - -m
@@ -45,6 +55,7 @@ steps:
   custom:
     - id: package
       name: Build distribution
+      network: none
       command: [".ci-venv/bin/python", "-m", "build"]
       reports: []
 artifacts:
@@ -58,3 +69,9 @@ extensions:
   - id: reference-review
     action: review
     required: false
+
+review:
+  enabled: true
+  pullRequestsOnly: true
+  criticalSeverities: [critical]
+  maxDiffBytes: 200000

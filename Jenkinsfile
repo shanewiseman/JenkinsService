@@ -2,6 +2,6 @@
 
 jenkinsServicePipeline(
     repositoryUrl: 'https://github.com/shanewiseman/JenkinsService.git',
-    trustedBranch: 'main',
+    trustedBranch: 'master',
     repository: 'shanewiseman/JenkinsService'
 )

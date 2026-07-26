@@ -65,9 +65,7 @@ def test_explicit_empty_runner_allowlist_does_not_fall_back_to_environment(
 
 def test_runner_returns_403_for_unallowlisted_extension() -> None:
     path = Path(__file__).parents[1] / "extensions"
-    manifest = json.loads(
-        (path / "reference-review" / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((path / "reference-review" / "manifest.json").read_text(encoding="utf-8"))
     manifest["id"] = "unknown-extension"
     app = create_runner_app(
         catalog_path=path,

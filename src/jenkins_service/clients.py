@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 from base64 import b64encode
+from dataclasses import dataclass
 from html import escape
 from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
+
+from .review import ReviewResult
 
 
 class UpstreamError(RuntimeError):
@@ -92,6 +95,12 @@ class JenkinsClient:
             "<hudson.model.StringParameterDefinition>"
             "<name>PULL_REQUEST</name><defaultValue></defaultValue><trim>true</trim>"
             "</hudson.model.StringParameterDefinition>"
+            "<hudson.model.StringParameterDefinition>"
+            "<name>BASE_SHA</name><defaultValue></defaultValue><trim>true</trim>"
+            "</hudson.model.StringParameterDefinition>"
+            "<hudson.model.StringParameterDefinition>"
+            "<name>BUILD_ID</name><defaultValue></defaultValue><trim>true</trim>"
+            "</hudson.model.StringParameterDefinition>"
             "</parameterDefinitions></hudson.model.ParametersDefinitionProperty>"
             "</properties>"
             "<definition class='org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition' "
@@ -133,7 +142,13 @@ class JenkinsClient:
         await self._post(f"/job/repositories/job/{encoded}/build")
 
     async def trigger(
-        self, owner: str, name: str, commit_sha: str, pull_request: int | None
+        self,
+        owner: str,
+        name: str,
+        commit_sha: str,
+        pull_request: int | None,
+        base_sha: str | None = None,
+        build_id: str | None = None,
     ) -> int:
         encoded = quote(self.job_name(owner, name), safe="")
         response = await self._post(
@@ -141,15 +156,15 @@ class JenkinsClient:
             params={
                 "COMMIT_SHA": commit_sha,
                 "PULL_REQUEST": str(pull_request or ""),
+                "BASE_SHA": base_sha or "",
+                "BUILD_ID": build_id or "",
             },
         )
         location = response.headers.get("location", "").rstrip("/")
         try:
             return int(location.rsplit("/", 1)[1])
         except (ValueError, IndexError):
-            raise UpstreamError(
-                "Jenkins did not return a valid queue item location"
-            ) from None
+            raise UpstreamError("Jenkins did not return a valid queue item location") from None
 
     async def cancel(self, job: str, build_number: int) -> None:
         encoded = self._job_path(job)
@@ -192,9 +207,7 @@ class JenkinsClient:
             response.raise_for_status()
             return cast(dict[str, Any], response.json())
         except httpx.HTTPError as exc:
-            raise UpstreamError(
-                f"failed to read Jenkins build {job} #{build_number}"
-            ) from exc
+            raise UpstreamError(f"failed to read Jenkins build {job} #{build_number}") from exc
 
     async def pipeline_result(
         self,
@@ -204,8 +217,7 @@ class JenkinsClient:
     ) -> bytes | None:
         encoded = self._job_path(job)
         path = (
-            f"{self.base_url}/job/{encoded}/{build_number}"
-            "/artifact/artifacts/pipeline-result.json"
+            f"{self.base_url}/job/{encoded}/{build_number}/artifact/artifacts/pipeline-result.json"
         )
         try:
             async with self.client.stream("GET", path, auth=self.auth) as response:
@@ -245,9 +257,66 @@ class JenkinsClient:
                 response.headers.get("x-more-data", "false").lower() == "true",
             )
         except (httpx.HTTPError, ValueError) as exc:
-            raise UpstreamError(
-                f"failed to read Jenkins log for {job} #{build_number}"
-            ) from exc
+            raise UpstreamError(f"failed to read Jenkins log for {job} #{build_number}") from exc
+
+
+@dataclass(frozen=True)
+class BrokerReview:
+    model: str
+    prompt_version: str
+    blocking: bool
+    review: ReviewResult
+
+
+class ReviewBrokerClient:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {token}"}
+        self.client = client or httpx.AsyncClient(timeout=90)
+        self._owns_client = client is None
+
+    async def close(self) -> None:
+        if self._owns_client:
+            await self.client.aclose()
+
+    async def review(
+        self,
+        *,
+        repository: str,
+        pull_request: int,
+        base_sha: str,
+        head_sha: str,
+        diff: str,
+        relevant_context: str = "",
+    ) -> BrokerReview:
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/internal/v1/review",
+                headers=self.headers,
+                json={
+                    "repository": repository,
+                    "pull_request": pull_request,
+                    "base_sha": base_sha.lower(),
+                    "head_sha": head_sha.lower(),
+                    "diff": diff,
+                    "relevant_context": relevant_context,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return BrokerReview(
+                model=str(payload["model"]),
+                prompt_version=str(payload["prompt_version"]),
+                blocking=bool(payload["blocking"]),
+                review=ReviewResult.model_validate(payload["review"]),
+            )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise UpstreamError("review broker returned no valid review") from exc
 
 
 class GitHubClient:
@@ -272,6 +341,63 @@ class GitHubClient:
     async def close(self) -> None:
         if self._owns_client:
             await self.client.aclose()
+
+    async def set_status(
+        self,
+        repository: str,
+        sha: str,
+        *,
+        context: str,
+        state: str,
+        description: str,
+        target_url: str | None = None,
+    ) -> dict[str, Any]:
+        if state not in {"pending", "success", "failure", "error"}:
+            raise ValueError(f"unsupported GitHub status state: {state}")
+        body: dict[str, Any] = {
+            "state": state,
+            "context": context,
+            "description": description[:140],
+        }
+        if target_url:
+            body["target_url"] = target_url
+        response = await self.client.post(
+            f"{self.api_url}/repos/{repository}/statuses/{sha}",
+            headers=self.headers,
+            json=body,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"GitHub status publication failed: {context}") from exc
+        return cast(dict[str, Any], response.json())
+
+    async def create_review(
+        self,
+        repository: str,
+        pull_number: int,
+        *,
+        commit_sha: str,
+        body: str,
+        comments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if pull_number < 1:
+            raise ValueError("pull_number must be positive")
+        response = await self.client.post(
+            f"{self.api_url}/repos/{repository}/pulls/{pull_number}/reviews",
+            headers=self.headers,
+            json={
+                "commit_id": commit_sha,
+                "event": "COMMENT",
+                "body": body,
+                "comments": comments,
+            },
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise UpstreamError("GitHub batched review publication failed") from exc
+        return cast(dict[str, Any], response.json())
 
     async def execute_action(
         self,

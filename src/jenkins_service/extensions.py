@@ -26,10 +26,7 @@ class ExtensionCatalog:
             for extension_id, manifest in manifests.items()
             if extension_id in allowlist
         }
-        self._schemas = {
-            extension_id: schemas[extension_id]
-            for extension_id in allowlist
-        }
+        self._schemas = {extension_id: schemas[extension_id] for extension_id in allowlist}
 
     @classmethod
     def from_directory(cls, path: Path, allowlist: set[str]) -> ExtensionCatalog:

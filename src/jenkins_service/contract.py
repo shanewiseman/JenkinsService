@@ -115,9 +115,7 @@ def _semantic_errors(document: dict[str, Any]) -> list[str]:
                     errors.append(f"{prefix}.command contains forbidden fragment {fragment!r}")
             step_environment_value = step.get("environment", {})
             step_environment = (
-                step_environment_value
-                if isinstance(step_environment_value, dict)
-                else {}
+                step_environment_value if isinstance(step_environment_value, dict) else {}
             )
             _environment_errors(
                 step_environment,

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from .clients import GitHubClient, JenkinsClient, UpstreamError
+from .clients import GitHubClient, JenkinsClient, ReviewBrokerClient, UpstreamError
 from .contract import contract_schema, validate_contract_content
 from .extensions import ExtensionCatalog, ExtensionRunnerClient
 from .models import (
     AuditRecord,
     Build,
+    BuildCompletion,
     CancelRequest,
     ContractValidation,
     ContractValidationRequest,
     ExtensionActionRequest,
+    ExtensionOutput,
     ExtensionRun,
     OperationAccepted,
     PipelineResult,
@@ -28,9 +32,11 @@ from .models import (
     ScanRequest,
     ServiceCapabilities,
     TriggerRequest,
+    WebhookDelivery,
     now_utc,
 )
 from .request_context import current_request_id
+from .review import DiffValidationError, parse_unified_diff
 from .security import Redactor
 from .store import NotFoundError, Store
 
@@ -44,21 +50,29 @@ class JenkinsService:
         store: Store,
         jenkins: JenkinsClient,
         github: GitHubClient,
+        review_broker: ReviewBrokerClient | None = None,
         extension_runner: ExtensionRunnerClient,
         extension_catalog: ExtensionCatalog,
         github_allowlist: list[str],
         service_version: str,
         max_artifact_bytes: int = 100_000_000,
+        public_base_url: str | None = None,
+        openai_model: str = "gpt-5.6-terra",
+        review_prompt_version: str = "v1",
         redactor: Redactor | None = None,
     ) -> None:
         self.store = store
         self.jenkins = jenkins
         self.github = github
+        self.review_broker = review_broker
         self.extension_runner = extension_runner
         self.extension_catalog = extension_catalog
         self.github_allowlist = github_allowlist
         self.service_version = service_version
         self.max_artifact_bytes = max_artifact_bytes
+        self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
+        self.openai_model = openai_model
+        self.review_prompt_version = review_prompt_version
         self.redactor = redactor or Redactor([])
         self.operation_ids: list[str] = []
 
@@ -245,53 +259,336 @@ class JenkinsService:
             detail="scan requested",
         )
 
+    async def _publish_ci_status(
+        self,
+        principal: Principal,
+        repository: str,
+        commit_sha: str,
+        context: str,
+        state: str,
+        description: str,
+        build_id: UUID,
+    ) -> bool:
+        target_url = (
+            f"{self.public_base_url}/api/v1/builds/{build_id}" if self.public_base_url else None
+        )
+        last_error: UpstreamError | None = None
+        for attempt in range(3):
+            try:
+                await self.github.set_status(
+                    repository,
+                    commit_sha,
+                    context=context,
+                    state=state,
+                    description=description,
+                    target_url=target_url,
+                )
+                return True
+            except UpstreamError as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (2**attempt))
+        await self._audit(
+            principal,
+            "github.status",
+            repository,
+            "failed",
+            {"context": context, "state": state, "reason": str(last_error)},
+        )
+        return False
+
     async def trigger_pipeline(
         self,
         principal: Principal,
         payload: TriggerRequest,
     ) -> QueueItem:
         repository = await self.store.get_repository(payload.repository_id)
+        result = PipelineResult(
+            repository=repository.full_name,
+            commit_sha=payload.commit_sha,
+            base_sha=payload.base_sha,
+            pull_request=payload.pull_request,
+            status="queued",
+        )
+        build = Build(
+            repository_id=repository.id,
+            jenkins_job=(
+                "repositories/"
+                + self.jenkins.job_name(
+                    repository.owner,
+                    repository.name,
+                )
+            ),
+            result=result,
+        )
+        build.result.build_id = build.id
         queue_id = await self.jenkins.trigger(
             repository.owner,
             repository.name,
             payload.commit_sha,
             payload.pull_request,
+            payload.base_sha,
+            str(build.id),
         )
         queue = QueueItem(
             repository_id=repository.id,
+            build_id=build.id,
             jenkins_queue_id=queue_id,
             commit_sha=payload.commit_sha,
+            base_sha=payload.base_sha,
             pull_request=payload.pull_request,
         )
+        build.queue_item_id = queue.id
+        build.jenkins_queue_id = queue_id
         await self.store.save_queue_item(queue)
-        result = PipelineResult(
-            repository=repository.full_name,
-            commit_sha=payload.commit_sha,
-            pull_request=payload.pull_request,
-            status="queued",
+        await self.store.save_build(build)
+        await self._publish_ci_status(
+            principal,
+            repository.full_name,
+            payload.commit_sha,
+            "jenkinsservice/native-ci",
+            "pending",
+            "Native Jenkins validation is queued",
+            build.id,
         )
-        await self.store.save_build(
-            Build(
-                repository_id=repository.id,
-                jenkins_job=(
-                    "repositories/"
-                    + self.jenkins.job_name(
-                        repository.owner,
-                        repository.name,
-                    )
-                ),
-                queue_item_id=queue.id,
-                jenkins_queue_id=queue_id,
-                result=result,
-            )
+        await self._publish_ci_status(
+            principal,
+            repository.full_name,
+            payload.commit_sha,
+            "jenkinsservice/ai-review",
+            "pending",
+            "Critical-only AI review is queued",
+            build.id,
         )
         await self._audit(
             principal,
             "trigger_pipeline",
             repository.full_name,
-            detail={"queue": str(queue.id)},
+            detail={"queue": str(queue.id), "build": str(build.id)},
         )
         return queue
+
+    async def complete_build(
+        self,
+        principal: Principal,
+        completion: BuildCompletion,
+    ) -> bool:
+        build = await self.store.get_build(completion.build_id)
+        expected = build.result
+        result = completion.result
+        if (
+            result.build_id != build.id
+            or result.repository.lower() != expected.repository.lower()
+            or result.commit_sha.lower() != expected.commit_sha.lower()
+            or (result.base_sha or "").lower() != (expected.base_sha or "").lower()
+            or result.pull_request != expected.pull_request
+        ):
+            raise ValueError("build completion identity does not match the queued build")
+        if result.status not in {"passed", "failed", "cancelled"}:
+            raise ValueError("build completion must contain a terminal result")
+        delivery = WebhookDelivery(
+            delivery_id=f"build-completion:{completion.callback_id}",
+            event="build_completion",
+            repository=result.repository,
+            accepted=True,
+        )
+        if any(
+            item.delivery_id == delivery.delivery_id for item in await self.store.list_webhooks()
+        ):
+            return False
+        build.result = result
+        build.updated_at = now_utc()
+        await self.store.save_build(build)
+        published = await self._publish_ci_status(
+            principal,
+            result.repository,
+            result.commit_sha,
+            "jenkinsservice/native-ci",
+            "success" if result.status == "passed" else "failure",
+            "Native Jenkins validation passed"
+            if result.status == "passed"
+            else f"Native Jenkins validation {result.status}",
+            build.id,
+        )
+        if not published:
+            raise UpstreamError("native CI status publication failed after bounded retries")
+        if not await self.store.record_webhook_once(delivery):
+            return False
+        await self._set_queue_state(
+            build,
+            "cancelled"
+            if result.status == "cancelled"
+            else "failed"
+            if result.status == "failed"
+            else "started",
+        )
+        await self._audit(
+            principal,
+            "build_completion",
+            str(build.id),
+            detail={"status": result.status, "callback_id": completion.callback_id},
+        )
+        return True
+
+    async def process_ai_review(
+        self,
+        principal: Principal,
+        completion: BuildCompletion,
+    ) -> None:
+        result = completion.result
+        policy = completion.review
+        if not policy.enabled or result.pull_request is None:
+            await self._publish_ci_status(
+                principal,
+                result.repository,
+                result.commit_sha,
+                "jenkinsservice/ai-review",
+                "success",
+                "AI review is not required for this build",
+                completion.build_id,
+            )
+            return
+        if result.base_sha is None or completion.diff is None or self.review_broker is None:
+            await self._publish_ci_status(
+                principal,
+                result.repository,
+                result.commit_sha,
+                "jenkinsservice/ai-review",
+                "failure",
+                "AI review prerequisites are unavailable",
+                completion.build_id,
+            )
+            return
+
+        identity = "|".join(
+            [
+                result.repository.lower(),
+                str(result.pull_request),
+                result.commit_sha.lower(),
+                self.openai_model,
+                self.review_prompt_version,
+            ]
+        )
+        idempotency_key = "ai-review:" + hashlib.sha256(identity.encode()).hexdigest()
+        previous = await self.store.get_extension_run_by_key(idempotency_key)
+        if previous is not None:
+            blocking = bool(
+                previous.output
+                and previous.output.requested_github_actions
+                and previous.output.requested_github_actions[0].get("blocking")
+            )
+            state = (
+                "pending"
+                if previous.status == "running"
+                else "failure"
+                if previous.status == "failed" or blocking
+                else "success"
+            )
+            await self._publish_ci_status(
+                principal,
+                result.repository,
+                result.commit_sha,
+                "jenkinsservice/ai-review",
+                state,
+                "Deduplicated critical-only AI review",
+                completion.build_id,
+            )
+            return
+
+        run = ExtensionRun(
+            extension_id="openai-review",
+            image_digest=self.openai_model,
+            action=self.review_prompt_version,
+            target=f"{result.repository}#{result.pull_request}",
+            idempotency_key=idempotency_key,
+        )
+        stored = await self.store.save_extension_run(run)
+        if stored.id != run.id:
+            return
+        try:
+            diff = completion.diff
+            if len(diff.encode("utf-8")) > policy.max_diff_bytes:
+                raise DiffValidationError("trusted review diff exceeds configured byte limit")
+            parsed = parse_unified_diff(diff)
+            broker = await self.review_broker.review(
+                repository=result.repository,
+                pull_request=result.pull_request,
+                base_sha=result.base_sha,
+                head_sha=result.commit_sha,
+                diff=diff,
+            )
+            if (
+                broker.model != self.openai_model
+                or broker.prompt_version != self.review_prompt_version
+            ):
+                raise ValueError("review broker identity does not match configured model/prompt")
+            parsed.validate_result(broker.review)
+            blocking = any(
+                finding.severity.value in policy.critical_severities
+                for finding in broker.review.findings
+            )
+            comments = [
+                {
+                    "path": finding.path,
+                    "line": finding.line,
+                    "side": "RIGHT",
+                    "body": (
+                        f"**{finding.severity.value.upper()}: {finding.title}**\n\n{finding.body}"
+                    ),
+                }
+                for finding in broker.review.findings
+            ]
+            review_response = await self.github.create_review(
+                result.repository,
+                result.pull_request,
+                commit_sha=result.commit_sha,
+                body=broker.review.summary,
+                comments=comments,
+            )
+            run.output = ExtensionOutput(
+                findings=[item.model_dump(mode="json") for item in broker.review.findings],
+                requested_github_actions=[
+                    {
+                        "blocking": blocking,
+                        "review_id": review_response.get("id"),
+                        "summary": broker.review.summary,
+                    }
+                ],
+            )
+            run.status = "succeeded"
+            run.completed_at = now_utc()
+            await self.store.save_extension_run(run)
+            await self._publish_ci_status(
+                principal,
+                result.repository,
+                result.commit_sha,
+                "jenkinsservice/ai-review",
+                "failure" if blocking else "success",
+                "Critical AI review finding requires changes"
+                if blocking
+                else "AI review found no critical issues",
+                completion.build_id,
+            )
+        except (UpstreamError, DiffValidationError, ValueError) as exc:
+            run.status = "failed"
+            run.completed_at = now_utc()
+            await self.store.save_extension_run(run)
+            await self._publish_ci_status(
+                principal,
+                result.repository,
+                result.commit_sha,
+                "jenkinsservice/ai-review",
+                "failure",
+                "AI review failed after bounded retries",
+                completion.build_id,
+            )
+            await self._audit(
+                principal,
+                "ai_review",
+                run.target,
+                "failed",
+                {"reason": str(exc), "idempotency_key": idempotency_key},
+            )
 
     async def retry_pipeline(
         self,
@@ -302,6 +599,7 @@ class JenkinsService:
         trigger = TriggerRequest(
             repository_id=build.repository_id,
             commit_sha=build.result.commit_sha,
+            base_sha=build.result.base_sha,
             pull_request=build.result.pull_request,
         )
         result = await self.trigger_pipeline(
