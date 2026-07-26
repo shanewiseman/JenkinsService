@@ -15,6 +15,13 @@ Routine work:
 - prune only objects labeled `dev.jenkinsservice.*`
 - test restore procedures quarterly
 
+A `github_webhook_dispatch` audit failure means GitHub authentication and
+delivery persistence succeeded but downstream reconciliation did not. Use its
+request and delivery IDs to correlate gateway/Jenkins logs, reconcile the
+repository job, and redeliver the GitHub event. Build completion returns `503`
+when a non-PR AI-review audit artifact cannot be recorded; the Jenkins callback
+retries the same signed, idempotent completion until the artifact exists.
+
 On suspected repository-runtime escape, stop new Jenkins builds, preserve
 audit/log evidence, rotate Docker certificates and all credentials available
 to trusted orchestration, recreate DinD state, and inspect the host. On write

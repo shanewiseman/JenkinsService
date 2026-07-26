@@ -4,6 +4,16 @@ All notable changes use Keep a Changelog categories.
 
 ## [Unreleased]
 
+### Fixed
+
+- First-push Jenkins hierarchy reconciliation now serializes per repository,
+  waits for legacy rename visibility, and recovers when another reconciler
+  wins folder creation; failed asynchronous webhook dispatches leave a
+  request-correlated audit record instead of disappearing silently.
+- Non-PR completion callbacks now record their skipped/disabled AI-review
+  check and log before returning success. AI-review processing retries
+  transient failures and resumes idempotent runs left incomplete.
+
 ### Added
 
 - Durable `ai-review.json` build artifacts for passed, failed, and skipped

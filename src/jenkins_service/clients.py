@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from base64 import b64encode
@@ -25,12 +26,15 @@ class JenkinsClient:
         token: str,
         client: httpx.AsyncClient | None = None,
         github_web_url: str = "https://github.com",
+        reconcile_delay_seconds: float = 0.2,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.auth = (username, token)
         self.client = client or httpx.AsyncClient(timeout=30)
         self._owns_client = client is None
         self.github_web_url = github_web_url.rstrip("/")
+        self.reconcile_delay_seconds = reconcile_delay_seconds
+        self._repository_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:
         if self._owns_client:
@@ -104,6 +108,23 @@ class JenkinsClient:
             auth=self.auth,
         )
 
+    async def _item_class(self, path: str) -> str | None:
+        response = await self._item(path)
+        if response.status_code == 404:
+            return None
+        try:
+            response.raise_for_status()
+            item_class = response.json().get("_class")
+        except (httpx.HTTPError, AttributeError, ValueError) as exc:
+            raise UpstreamError(f"Jenkins item state is unavailable: {path}") from exc
+        if not isinstance(item_class, str) or not item_class:
+            raise UpstreamError(f"Jenkins item has no class metadata: {path}")
+        return item_class
+
+    async def _reconcile_pause(self, attempt: int) -> None:
+        if self.reconcile_delay_seconds > 0:
+            await asyncio.sleep(self.reconcile_delay_seconds * (2**attempt))
+
     async def _create_item(self, parent: str, name: str, xml: str) -> None:
         headers = {**await self._crumb(), "Content-Type": "application/xml"}
         response = await self.client.post(
@@ -116,30 +137,52 @@ class JenkinsClient:
         response.raise_for_status()
 
     async def _ensure_repository_folder(self, owner: str, name: str) -> None:
+        folder_class = "com.cloudbees.hudson.plugins.folder.Folder"
+        workflow_class = "org.jenkinsci.plugins.workflow.job.WorkflowJob"
+        attempts = 6
         repository_name = self.job_name(owner, name)
         repository_path = f"repositories/{repository_name}"
-        existing = await self._item(repository_path)
-        if existing.status_code != 404:
-            existing.raise_for_status()
-            item_class = existing.json().get("_class")
-            if item_class == "com.cloudbees.hudson.plugins.folder.Folder":
-                return
-            if item_class != "org.jenkinsci.plugins.workflow.job.WorkflowJob":
-                raise UpstreamError(
-                    f"repository Jenkins path has an unexpected item type: {repository_path}"
-                )
-            legacy_path = f"repositories/{self.legacy_job_name(owner, name)}"
-            legacy = await self._item(legacy_path)
-            if legacy.status_code != 404:
-                legacy.raise_for_status()
-                raise UpstreamError(
-                    f"cannot migrate Jenkins job for {owner}/{name}: "
-                    "the legacy history path already exists"
-                )
-            await self._post(
-                f"/job/{self._job_path(repository_path)}/doRename",
-                params={"newName": self.legacy_job_name(owner, name)},
+        legacy_path = f"repositories/{self.legacy_job_name(owner, name)}"
+        item_class = await self._item_class(repository_path)
+        if item_class == folder_class:
+            return
+        if item_class not in {None, workflow_class}:
+            raise UpstreamError(
+                f"repository Jenkins path has an unexpected item type: {repository_path}"
             )
+        if item_class == workflow_class:
+            legacy_class = await self._item_class(legacy_path)
+            if legacy_class not in {None, workflow_class}:
+                raise UpstreamError(
+                    f"legacy Jenkins path has an unexpected item type: {legacy_path}"
+                )
+            if legacy_class is None:
+                await self._post(
+                    f"/job/{self._job_path(repository_path)}/doRename",
+                    params={"newName": self.legacy_job_name(owner, name)},
+                )
+
+            for attempt in range(attempts):
+                current_class = await self._item_class(repository_path)
+                legacy_class = await self._item_class(legacy_path)
+                if current_class == folder_class:
+                    return
+                if current_class is None and legacy_class == workflow_class:
+                    break
+                if current_class not in {None, workflow_class}:
+                    raise UpstreamError(
+                        f"repository Jenkins path changed to an unexpected item type: "
+                        f"{repository_path}"
+                    )
+                if legacy_class not in {None, workflow_class}:
+                    raise UpstreamError(
+                        f"legacy Jenkins path changed to an unexpected item type: {legacy_path}"
+                    )
+                await self._reconcile_pause(attempt)
+            else:
+                raise UpstreamError(
+                    f"Jenkins legacy job migration did not settle for {owner}/{name}"
+                )
 
         folder_xml = (
             "<?xml version='1.1' encoding='UTF-8'?>"
@@ -155,12 +198,26 @@ class JenkinsClient:
             "<healthMetrics/><icon class='com.cloudbees.hudson.plugins.folder.icons."
             "StockFolderIcon'/></com.cloudbees.hudson.plugins.folder.Folder>"
         )
-        try:
-            await self._create_item("repositories", repository_name, folder_xml)
-        except httpx.HTTPError as exc:
-            raise UpstreamError(
-                f"failed to create Jenkins repository folder for {owner}/{name}"
-            ) from exc
+        last_error: httpx.HTTPError | None = None
+        for attempt in range(attempts):
+            current_class = await self._item_class(repository_path)
+            if current_class == folder_class:
+                return
+            if current_class is not None:
+                raise UpstreamError(
+                    f"repository Jenkins path changed to an unexpected item type: {repository_path}"
+                )
+            try:
+                await self._create_item("repositories", repository_name, folder_xml)
+            except httpx.HTTPError as exc:
+                last_error = exc
+            await self._reconcile_pause(attempt)
+
+        if await self._item_class(repository_path) == folder_class:
+            return
+        raise UpstreamError(
+            f"failed to reconcile Jenkins repository folder for {owner}/{name}"
+        ) from last_error
 
     async def ensure_job(
         self,
@@ -171,7 +228,10 @@ class JenkinsClient:
         pull_request: int | None = None,
     ) -> None:
         branch = branch or default_branch
-        await self._ensure_repository_folder(owner, name)
+        repository_key = f"{owner.lower()}/{name.lower()}"
+        lock = self._repository_locks.setdefault(repository_key, asyncio.Lock())
+        async with lock:
+            await self._ensure_repository_folder(owner, name)
         repository_name = self.job_name(owner, name)
         child_name = self.branch_job_name(branch, pull_request)
         if pull_request is not None:

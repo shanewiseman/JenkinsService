@@ -40,6 +40,10 @@ independent Jenkins histories but all execute the same controller-managed,
 trusted Pipeline wrapper. Repository or PR source revisions therefore select
 test input, never Pipeline orchestration. Legacy aggregate jobs are retained
 beside the repository folder with a `--legacy` suffix during migration.
+Repository reconciliation is serialized inside the gateway and verifies
+Jenkins item classes through a bounded visibility window. This accommodates
+Jenkins' asynchronous rename/create namespace updates and treats a folder
+created by a concurrent reconciler as success.
 
 Native results are reusable only when both the source SHA and the trusted
 target-branch SHA match. A later PR event can therefore publish the already
@@ -51,6 +55,10 @@ AI-review logs are gateway-generated artifacts persisted with the build
 projection in PostgreSQL. The canonical `PipelineResult` references the
 extension run and includes the artifact digest and curated download URL.
 Jenkins' already-archived native result remains immutable.
+Non-PR skipped/disabled review logging completes synchronously with the signed
+build callback, so Jenkins receives success only after the audit artifact
+exists. PR model execution remains asynchronous, uses bounded retries, and can
+resume an idempotent run that was persisted before its final log.
 
 The controller and agent share neither the host Docker socket nor host paths.
 The agent workspace is a named volume also mounted in DinD so child containers

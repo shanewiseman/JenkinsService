@@ -7,6 +7,7 @@ import json
 from fastapi.testclient import TestClient
 
 from jenkins_service.app import create_app
+from jenkins_service.clients import UpstreamError
 from jenkins_service.models import RepositoryCreate, Scope
 from jenkins_service.webhook import dispatch_github_webhook, process_github_webhook
 
@@ -346,6 +347,64 @@ def test_webhook_background_audit_retains_request_id(
     assert response.status_code == 202
     assert store.audit[-1].action == "trigger_pipeline"
     assert store.audit[-1].request_id == "webhook-request-123"
+
+
+def test_webhook_background_failure_is_durably_audited(
+    settings,
+    store,
+    service,
+    authenticator,
+    monkeypatch,
+) -> None:
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    payload = {
+        "after": "a" * 40,
+        "ref": "refs/heads/feature/first-push",
+        "repository": {"full_name": "allowed/project"},
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    signature = "sha256=" + hmac.new(b"webhook-secret", body, hashlib.sha256).hexdigest()
+
+    async def fail_trigger(*args, **kwargs) -> None:
+        raise UpstreamError("transient Jenkins reconciliation failure")
+
+    monkeypatch.setattr(service, "trigger_pipeline", fail_trigger)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/repositories",
+            headers={"Authorization": "Bearer operate-token"},
+            json={"owner": "allowed", "name": "project"},
+        )
+        assert created.status_code == 200
+        response = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature,
+                "X-GitHub-Delivery": "failed-dispatch-delivery",
+                "X-GitHub-Event": "push",
+                "X-Request-ID": "failed-webhook-request",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 202
+    failure = store.audit[-1]
+    assert failure.action == "github_webhook_dispatch"
+    assert failure.target == "failed-dispatch-delivery"
+    assert failure.outcome == "failed"
+    assert failure.request_id == "failed-webhook-request"
+    assert failure.detail == {
+        "event": "push",
+        "repository": "allowed/project",
+        "error_type": "UpstreamError",
+        "reason": "transient Jenkins reconciliation failure",
+    }
 
 
 def test_webhook_body_limit_is_enforced_while_streaming(

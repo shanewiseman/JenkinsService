@@ -16,6 +16,7 @@ from jenkins_service.clients import BrokerReview
 from jenkins_service.models import (
     BuildCompletion,
     CheckResult,
+    ExtensionRun,
     PipelineResult,
     Principal,
     RepositoryCreate,
@@ -164,6 +165,195 @@ def test_build_completion_authentication_replay_and_idempotency(
     assert stored.ai_review_log is not None
     assert stored.ai_review_log.outcome == "skipped"
     assert stored.result.checks[-1].status == "skipped"
+
+
+def test_build_completion_retries_transient_ai_review_persistence(
+    settings,
+    store,
+    service,
+    authenticator,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret = "completion-secret"
+    secret_file = tmp_path / "build-callback"
+    secret_file.write_text(secret, encoding="utf-8")
+    settings.build_callback_secret_file = secret_file
+    principal = Principal(token_id="operator", scopes={Scope.OPERATE})
+    repository = asyncio.run(
+        service.register_repository(
+            principal,
+            RepositoryCreate(owner="allowed", name="project"),
+        )
+    )
+    queue = asyncio.run(
+        service.trigger_pipeline(
+            principal,
+            TriggerRequest(repository_id=repository.id, commit_sha="d" * 40),
+        )
+    )
+    assert queue.build_id is not None
+    result = PipelineResult(
+        repository=repository.full_name,
+        commit_sha="d" * 40,
+        build_id=queue.build_id,
+        status="passed",
+    )
+    completion = BuildCompletion(
+        callback_id="retry-review-callback",
+        timestamp=int(time.time()),
+        build_id=queue.build_id,
+        result=result,
+    )
+    original_save = store.save_extension_run
+    save_attempts = 0
+
+    async def flaky_save(value):
+        nonlocal save_attempts
+        save_attempts += 1
+        if save_attempts == 1:
+            raise RuntimeError("transient extension persistence failure")
+        return await original_save(value)
+
+    monkeypatch.setattr(store, "save_extension_run", flaky_save)
+    body = completion.model_dump_json().encode()
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/build-completions",
+            content=body,
+            headers={"X-JenkinsService-Signature": _signature(secret, body)},
+        )
+
+    assert response.status_code == 202
+    assert save_attempts == 3
+    stored = asyncio.run(store.get_build(queue.build_id))
+    assert stored.ai_review_log is not None
+    assert stored.ai_review_log.outcome == "skipped"
+    assert stored.result.checks[-1].id == "ai-review"
+    assert stored.result.checks[-1].status == "skipped"
+
+
+def test_non_pr_completion_remains_retryable_until_ai_audit_exists(
+    settings,
+    store,
+    service,
+    authenticator,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret = "completion-secret"
+    secret_file = tmp_path / "build-callback"
+    secret_file.write_text(secret, encoding="utf-8")
+    settings.build_callback_secret_file = secret_file
+    principal = Principal(token_id="operator", scopes={Scope.OPERATE})
+    repository = asyncio.run(
+        service.register_repository(
+            principal,
+            RepositoryCreate(owner="allowed", name="project"),
+        )
+    )
+    queue = asyncio.run(
+        service.trigger_pipeline(
+            principal,
+            TriggerRequest(repository_id=repository.id, commit_sha="f" * 40),
+        )
+    )
+    assert queue.build_id is not None
+    completion = BuildCompletion(
+        callback_id="retryable-audit-callback",
+        timestamp=int(time.time()),
+        build_id=queue.build_id,
+        result=PipelineResult(
+            repository=repository.full_name,
+            commit_sha="f" * 40,
+            build_id=queue.build_id,
+            status="passed",
+        ),
+    )
+    original_retry = service.process_ai_review_with_retry
+
+    async def fail_recording(*args, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(service, "process_ai_review_with_retry", fail_recording)
+    body = completion.model_dump_json().encode()
+    headers = {"X-JenkinsService-Signature": _signature(secret, body)}
+    app = create_app(
+        settings=settings,
+        store=store,
+        service=service,
+        authenticator=authenticator,
+    )
+    with TestClient(app) as client:
+        failed = client.post("/internal/build-completions", content=body, headers=headers)
+        monkeypatch.setattr(service, "process_ai_review_with_retry", original_retry)
+        retried = client.post("/internal/build-completions", content=body, headers=headers)
+
+    assert failed.status_code == 503
+    assert retried.status_code == 202
+    assert retried.json()["duplicate"] is True
+    stored = asyncio.run(store.get_build(queue.build_id))
+    assert stored.ai_review_log is not None
+    assert stored.ai_review_log.outcome == "skipped"
+    assert stored.result.checks[-1].status == "skipped"
+
+
+async def test_ai_review_resumes_stalled_idempotent_run(
+    service,
+    store,
+) -> None:
+    principal = Principal(token_id="jenkins-callback", scopes={Scope.OPERATE})
+    repository = await service.register_repository(
+        principal,
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(repository_id=repository.id, commit_sha="e" * 40),
+    )
+    assert queue.build_id is not None
+    result = PipelineResult(
+        repository=repository.full_name,
+        commit_sha="e" * 40,
+        build_id=queue.build_id,
+        status="passed",
+    )
+    completion = BuildCompletion(
+        callback_id="resume-review-callback",
+        timestamp=int(time.time()),
+        build_id=queue.build_id,
+        result=result,
+    )
+    assert await service.complete_build(principal, completion)
+    identity = (
+        f"{repository.full_name}|not-a-pull-request||{'e' * 40}|"
+        f"{service.openai_model}|{service.review_prompt_version}"
+    )
+    stalled = ExtensionRun(
+        extension_id="openai-review",
+        image_digest=service.openai_model,
+        action=service.review_prompt_version,
+        target=f"{repository.full_name}@{'e' * 40}",
+        idempotency_key="ai-review:" + hashlib.sha256(identity.encode()).hexdigest(),
+    )
+    await store.save_extension_run(stalled)
+
+    await service.process_ai_review(principal, completion)
+
+    resumed = await store.get_extension_run(stalled.id)
+    assert resumed.status == "skipped"
+    assert resumed.output is not None
+    assert resumed.output.review_log is not None
+    assert resumed.output.review_log.outcome == "skipped"
+    build = await store.get_build(queue.build_id)
+    assert build.ai_review_log == resumed.output.review_log
+    assert build.result.checks[-1].status == "skipped"
 
 
 @pytest.mark.parametrize(

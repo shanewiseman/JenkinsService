@@ -51,11 +51,42 @@ async def _dispatch_github_webhook_with_request_id(
     service: JenkinsService,
     event: str,
     payload: dict[str, Any],
+    delivery_id: str,
     request_id: str,
 ) -> None:
     request_id_token = current_request_id.set(request_id)
     try:
-        await dispatch_github_webhook(service, event, payload)
+        try:
+            await dispatch_github_webhook(service, event, payload)
+        except Exception as exc:
+            repository = payload.get("repository")
+            full_name = repository.get("full_name") if isinstance(repository, dict) else None
+            await service.record_background_failure(
+                Principal(
+                    token_id="github-webhook",  # noqa: S106 - fixed internal audit identity
+                    scopes={Scope.OPERATE},
+                ),
+                "github_webhook_dispatch",
+                delivery_id,
+                exc,
+                detail={
+                    "event": event,
+                    "repository": full_name if isinstance(full_name, str) else "unknown",
+                },
+            )
+    finally:
+        current_request_id.reset(request_id_token)
+
+
+async def _process_ai_review_with_request_id(
+    service: JenkinsService,
+    principal: Principal,
+    completion: BuildCompletion,
+    request_id: str,
+) -> None:
+    request_id_token = current_request_id.set(request_id)
+    try:
+        await service.process_ai_review_with_retry(principal, completion)
     finally:
         current_request_id.reset(request_id_token)
 
@@ -283,8 +314,21 @@ def create_app(
             inserted = await service.complete_build(principal, completion)
         except (NotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if inserted or completion.result.pull_request is not None:
-            background_tasks.add_task(service.process_ai_review, principal, completion)
+        if completion.result.pull_request is None:
+            review_recorded = await service.process_ai_review_with_retry(principal, completion)
+            if not review_recorded:
+                raise HTTPException(
+                    status_code=503,
+                    detail="AI review audit recording failed; retry the completion callback",
+                )
+        else:
+            background_tasks.add_task(
+                _process_ai_review_with_request_id,
+                service,
+                principal,
+                completion,
+                request.state.request_id,
+            )
         return {
             "accepted": True,
             "duplicate": not inserted,
@@ -358,6 +402,7 @@ def create_app(
             service,
             event,
             payload,
+            delivery_id,
             request.state.request_id,
         )
         return {
