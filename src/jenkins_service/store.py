@@ -28,6 +28,12 @@ class NotFoundError(Exception):
     pass
 
 
+def _model_from_json[ModelT: BaseModel](model: type[ModelT], value: object) -> ModelT:
+    if isinstance(value, str | bytes | bytearray):
+        return model.model_validate_json(value)
+    return model.model_validate(value)
+
+
 class Store(Protocol):
     async def connect(self) -> None: ...
 
@@ -328,7 +334,7 @@ class PostgresStore:
 
     async def list_repositories(self) -> list[Repository]:
         rows = await self._pool().fetch("SELECT data FROM repositories ORDER BY full_name")
-        return [Repository.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(Repository, row["data"]) for row in rows]
 
     async def get_repository(
         self,
@@ -340,7 +346,7 @@ class PostgresStore:
         )
         if row is None:
             raise NotFoundError(f"repository not found: {repository_id}")
-        return Repository.model_validate(row["data"])
+        return _model_from_json(Repository, row["data"])
 
     async def update_repository(
         self,
@@ -399,7 +405,7 @@ class PostgresStore:
         rows = await self._pool().fetch(
             "SELECT data FROM queue_items ORDER BY created_at DESC LIMIT 500"
         )
-        return [QueueItem.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(QueueItem, row["data"]) for row in rows]
 
     async def get_queue_item(
         self,
@@ -411,7 +417,7 @@ class PostgresStore:
         )
         if row is None:
             raise NotFoundError(f"queue item not found: {queue_item_id}")
-        return QueueItem.model_validate(row["data"])
+        return _model_from_json(QueueItem, row["data"])
 
     async def save_build(self, value: Build) -> Build:
         await self._pool().execute(
@@ -440,13 +446,13 @@ class PostgresStore:
         )
         if row is None:
             raise NotFoundError(f"build not found: {build_id}")
-        return Build.model_validate(row["data"])
+        return _model_from_json(Build, row["data"])
 
     async def list_builds(self) -> list[Build]:
         rows = await self._pool().fetch(
             "SELECT data FROM builds ORDER BY created_at DESC LIMIT 500"
         )
-        return [Build.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(Build, row["data"]) for row in rows]
 
     async def record_webhook_once(
         self,
@@ -470,7 +476,7 @@ class PostgresStore:
         rows = await self._pool().fetch(
             "SELECT data FROM webhook_deliveries ORDER BY received_at DESC LIMIT 500"
         )
-        return [WebhookDelivery.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(WebhookDelivery, row["data"]) for row in rows]
 
     async def save_extension_run(
         self,
@@ -500,7 +506,7 @@ class PostgresStore:
             _json(value),
             value.created_at,
         )
-        return ExtensionRun.model_validate(row["data"])
+        return _model_from_json(ExtensionRun, row["data"])
 
     async def get_extension_run_by_key(
         self,
@@ -510,7 +516,7 @@ class PostgresStore:
             "SELECT data FROM extension_runs WHERE idempotency_key = $1",
             key,
         )
-        return ExtensionRun.model_validate(row["data"]) if row else None
+        return _model_from_json(ExtensionRun, row["data"]) if row else None
 
     async def list_extension_runs(
         self,
@@ -518,7 +524,7 @@ class PostgresStore:
         rows = await self._pool().fetch(
             "SELECT data FROM extension_runs ORDER BY created_at DESC LIMIT 500"
         )
-        return [ExtensionRun.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(ExtensionRun, row["data"]) for row in rows]
 
     async def record_audit(
         self,
@@ -540,4 +546,4 @@ class PostgresStore:
         rows = await self._pool().fetch(
             "SELECT data FROM audit_records ORDER BY created_at DESC LIMIT 1000"
         )
-        return [AuditRecord.model_validate(row["data"]) for row in rows]
+        return [_model_from_json(AuditRecord, row["data"]) for row in rows]

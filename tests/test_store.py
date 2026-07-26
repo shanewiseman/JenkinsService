@@ -39,6 +39,19 @@ class RecordingPool:
         return {"delivery_id": args[0]}
 
 
+class RepositoryReadPool:
+    def __init__(self, data: str) -> None:
+        self.data = data
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        assert "FROM repositories" in query
+        return [{"data": self.data}]
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any]:
+        assert "FROM repositories" in query
+        return {"data": self.data}
+
+
 async def test_repository_lifecycle() -> None:
     store = MemoryStore()
     repository = await store.create_repository(RepositoryCreate(owner="allowed", name="project"))
@@ -52,6 +65,20 @@ async def test_repository_lifecycle() -> None:
     await store.delete_repository(repository.id)
     with pytest.raises(NotFoundError):
         await store.get_repository(repository.id)
+
+
+async def test_postgres_repository_reads_decode_jsonb_text() -> None:
+    repository = await MemoryStore().create_repository(
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    pool = RepositoryReadPool(
+        repository.model_dump_json(exclude={"full_name"}),
+    )
+    store = PostgresStore("postgresql://unused")
+    store.pool = pool  # type: ignore[assignment]
+
+    assert await store.list_repositories() == [repository]
+    assert await store.get_repository(repository.id) == repository
 
 
 async def test_webhook_delivery_is_atomic_and_idempotent() -> None:
