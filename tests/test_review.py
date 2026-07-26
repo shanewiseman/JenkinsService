@@ -120,6 +120,10 @@ async def test_openai_success_uses_strict_responses_contract() -> None:
     assert body["reasoning"] == {"effort": "medium"}
     assert body["text"]["format"]["strict"] is True
     assert body["text"]["format"]["type"] == "json_schema"
+    assert (
+        "If there are no findings, state that clearly in the review summary."
+        in body["instructions"]
+    )
 
 
 def test_broker_marks_critical_finding_as_blocking(tmp_path: Path) -> None:

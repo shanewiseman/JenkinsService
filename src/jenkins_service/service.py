@@ -128,6 +128,27 @@ class JenkinsService:
             )
         )
 
+    async def record_background_failure(
+        self,
+        principal: Principal,
+        action: str,
+        target: str,
+        error: Exception,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        safe_reason = self.redactor.redact(str(error))[:2_000]
+        await self._audit(
+            principal,
+            action,
+            target,
+            "failed",
+            {
+                **(detail or {}),
+                "error_type": type(error).__name__,
+                "reason": safe_reason,
+            },
+        )
+
     async def capabilities(
         self,
         principal: Principal,
@@ -663,6 +684,7 @@ class JenkinsService:
         )
         idempotency_key = "ai-review:" + hashlib.sha256(identity.encode()).hexdigest()
         previous = await self.store.get_extension_run_by_key(idempotency_key)
+        started_at = previous.created_at if previous is not None else now_utc()
         if previous is not None:
             previous_log = previous.output.review_log if previous.output else None
             if previous_log is not None:
@@ -693,23 +715,29 @@ class JenkinsService:
                     "Deduplicated critical-only AI review",
                     completion.build_id,
                 )
-            return
-
-        started_at = now_utc()
-        run = ExtensionRun(
-            extension_id="openai-review",
-            image_digest=self.openai_model,
-            action=self.review_prompt_version,
-            target=(
-                f"{result.repository}#{result.pull_request}"
-                if result.pull_request is not None
-                else f"{result.repository}@{result.commit_sha}"
-            ),
-            idempotency_key=idempotency_key,
-        )
-        stored = await self.store.save_extension_run(run)
-        if stored.id != run.id:
-            return
+                return
+            if previous.status != "running":
+                return
+            run = previous
+        else:
+            run = ExtensionRun(
+                extension_id="openai-review",
+                image_digest=self.openai_model,
+                action=self.review_prompt_version,
+                target=(
+                    f"{result.repository}#{result.pull_request}"
+                    if result.pull_request is not None
+                    else f"{result.repository}@{result.commit_sha}"
+                ),
+                idempotency_key=idempotency_key,
+            )
+            stored = await self.store.save_extension_run(run)
+            if stored.id != run.id:
+                stored_log = stored.output.review_log if stored.output else None
+                if stored.status != "running" or stored_log is not None:
+                    return
+                run = stored
+                started_at = stored.created_at
 
         if not policy.enabled or result.pull_request is None:
             completed_at = now_utc()
@@ -970,6 +998,36 @@ class JenkinsService:
             )
         except (UpstreamError, DiffValidationError, ValueError) as exc:
             await record_failure(str(exc))
+
+    async def process_ai_review_with_retry(
+        self,
+        principal: Principal,
+        completion: BuildCompletion,
+        prerequisite_error: str | None = None,
+        attempts: int = 3,
+    ) -> bool:
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                await self.process_ai_review(
+                    principal,
+                    completion,
+                    prerequisite_error=prerequisite_error,
+                )
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.25 * (2**attempt))
+        if last_error is not None:
+            await self.record_background_failure(
+                principal,
+                "ai_review_background",
+                str(completion.build_id),
+                last_error,
+                detail={"attempts": attempts},
+            )
+        return False
 
     async def retry_pipeline(
         self,

@@ -3,7 +3,10 @@
 Unit and contract tests exercise schema and semantic validation, scopes and
 token hashes, client request boundaries, webhook signatures/replays and
 allowlists, result models, audit records, extension manifests/output, and the
-operation publication boundary.
+operation publication boundary. Regression coverage includes delayed Jenkins
+legacy-job rename visibility, concurrent folder-creation collisions, durable
+webhook dispatch-failure audits, transient AI-review persistence failures,
+callback retry recovery, and resumption of incomplete idempotent review runs.
 
 ```bash
 pytest --cov=jenkins_service
