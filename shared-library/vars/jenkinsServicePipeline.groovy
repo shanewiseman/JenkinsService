@@ -520,10 +520,11 @@ private String dockerCommand(
         "--env ${shellQuote(key.toString() + '=' + value.toString())}"
     }.join(' ')
     String network = networkPolicy == 'egress' ? buildNetwork : 'none'
+    String memoryLimit = dockerMemoryLimit((runtime.memory ?: '2Gi').toString())
     return """
         docker run --rm --network ${shellQuote(network)} --cap-drop ALL \\
           --security-opt no-new-privileges --pids-limit ${(runtime.pids ?: 512) as int} \\
-          --memory ${shellQuote((runtime.memory ?: '2Gi').toString())} \\
+          --memory ${shellQuote(memoryLimit)} \\
           --cpus ${shellQuote((runtime.cpu ?: 2).toString())} \\
           --user "\$(id -u):\$(id -g)" \\
           --label ${shellQuote(buildLabel)} --tmpfs /tmp:rw,noexec,nosuid,size=256m \\
@@ -531,6 +532,17 @@ private String dockerCommand(
           --workdir ${shellQuote('/workspace/' + workingDirectory)} ${environmentArgs} \\
           ${shellQuote(runtime.image.toString())} /bin/sh -eu -c ${shellQuote(commandText)}
     """.stripIndent().trim()
+}
+
+@NonCPS
+private String dockerMemoryLimit(String value) {
+    if (value.endsWith('Gi')) {
+        return value.substring(0, value.length() - 2) + 'g'
+    }
+    if (value.endsWith('Mi')) {
+        return value.substring(0, value.length() - 2) + 'm'
+    }
+    throw new IllegalArgumentException("Unsupported validated memory value: ${value}")
 }
 
 private String shellQuote(String value) {
