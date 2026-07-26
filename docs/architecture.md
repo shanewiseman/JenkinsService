@@ -22,12 +22,35 @@ The stack has seven roles:
    gateway independently validates every proposed path and added line before
    publishing one batched GitHub review. The trusted Jenkins checkout creates a
    byte- and time-bounded exact base-to-head diff and includes it in the signed
-   completion callback, so the gateway write PAT needs no Contents permission.
+   completion callback. When a PR reuses an already-passed exact-SHA native
+   build, the gateway retrieves the bounded PR diff through the pull-request
+   API, verifies the expected base and head identities before and after the
+   download, and applies the same line validation. Neither path gives the
+   review broker a GitHub credential.
 
 Persisted Jenkins queue and build identifiers are lazily reconciled on
 resource reads. This lets a restarted gateway recover build numbers, validate
 terminal `PipelineResult` artifacts, serve progressive logs, and cancel either
 queued or running work without relying on in-memory watchers.
+
+The gateway owns the Jenkins job hierarchy. Each registered repository is a
+folder under `repositories`; ordinary pushes run in a child named for the
+branch, while pull requests run in `PR-NUMBER` children. The children retain
+independent Jenkins histories but all execute the same controller-managed,
+trusted Pipeline wrapper. Repository or PR source revisions therefore select
+test input, never Pipeline orchestration. Legacy aggregate jobs are retained
+beside the repository folder with a `--legacy` suffix during migration.
+
+Native results are reusable only when both the source SHA and the trusted
+target-branch SHA match. A later PR event can therefore publish the already
+passed `native-ci` result without rerunning repository code, while still
+executing the PR-only AI review. A target-branch contract change invalidates
+that cache and causes a normal PR job.
+
+AI-review logs are gateway-generated artifacts persisted with the build
+projection in PostgreSQL. The canonical `PipelineResult` references the
+extension run and includes the artifact digest and curated download URL.
+Jenkins' already-archived native result remains immutable.
 
 The controller and agent share neither the host Docker socket nor host paths.
 The agent workspace is a named volume also mounted in DinD so child containers

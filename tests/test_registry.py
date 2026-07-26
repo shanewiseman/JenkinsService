@@ -16,6 +16,7 @@ def test_registry_has_unique_curated_operations() -> None:
         "trigger_pipeline",
         "retry_pipeline",
         "cancel_pipeline",
+        "build_ai_review_log",
         "run_extension_action",
     }.issubset(ids)
     forbidden = {"script_console", "raw_jenkins", "credentials", "plugin_manager"}

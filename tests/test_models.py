@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,7 @@ from jenkins_service.models import (
     ExtensionManifest,
     PipelineResult,
     RepositoryCreate,
+    TriggerRequest,
 )
 
 
@@ -16,11 +19,19 @@ def test_pipeline_result_requires_exact_commit() -> None:
     result = PipelineResult(
         repository="allowed/project",
         commit_sha="a" * 40,
+        trusted_sha="b" * 40,
         status="passed",
     )
     assert result.schema_version == "ci.jenkinsservice.dev/result/v1"
     with pytest.raises(ValidationError):
         PipelineResult(repository="allowed/project", commit_sha="main", status="passed")
+    with pytest.raises(ValidationError):
+        PipelineResult(
+            repository="allowed/project",
+            commit_sha="a" * 40,
+            trusted_sha="main",
+            status="passed",
+        )
 
 
 def test_extension_manifest_requires_digest() -> None:
@@ -46,6 +57,12 @@ def test_extension_manifest_requires_digest() -> None:
 def test_repository_rejects_unsafe_branch_names(branch: str) -> None:
     with pytest.raises(ValidationError, match="default_branch"):
         RepositoryCreate(owner="allowed", name="repo", default_branch=branch)
+    with pytest.raises(ValidationError, match="branch"):
+        TriggerRequest(
+            repository_id=uuid4(),
+            commit_sha="a" * 40,
+            branch=branch,
+        )
 
 
 def test_pipeline_result_rejects_unknown_fields_and_unsafe_artifact_paths() -> None:

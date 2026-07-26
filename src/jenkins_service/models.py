@@ -110,16 +110,74 @@ class Repository(RepositoryCreate):
         return f"{self.owner}/{self.name}"
 
 
+ReviewSeverity = Literal["critical"]
+
+
+def _critical_review_severities() -> set[ReviewSeverity]:
+    return {"critical"}
+
+
+class ReviewPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    pull_requests_only: Literal[True] = True
+    critical_severities: set[ReviewSeverity] = Field(
+        default_factory=_critical_review_severities,
+        min_length=1,
+        max_length=1,
+    )
+    max_diff_bytes: int = Field(default=200_000, ge=1024, le=1_000_000)
+
+
+class AIReviewAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["github_pull_request_review", "github_commit_status"]
+    status: Literal["performed", "not_performed", "failed"]
+    detail: str = Field(min_length=1, max_length=500)
+    response_id: str | None = Field(default=None, max_length=200)
+
+
+class AIReviewLog(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["ci.jenkinsservice.dev/ai-review-log/v1"] = (
+        "ci.jenkinsservice.dev/ai-review-log/v1"
+    )
+    build_id: UUID
+    review_run_id: UUID
+    repository: str
+    pull_request: int | None = Field(default=None, ge=1)
+    base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
+    head_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    model: str
+    prompt_version: str
+    outcome: Literal["passed", "failed", "skipped"]
+    summary: str = Field(min_length=1, max_length=4_000)
+    findings: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    actions: list[AIReviewAction] = Field(default_factory=list, max_length=20)
+    failure_reason: str | None = Field(default=None, max_length=2_000)
+    started_at: datetime
+    completed_at: datetime
+
+
 class QueueItem(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     repository_id: UUID
     build_id: UUID | None = None
     jenkins_queue_id: int | None = None
-    state: Literal["queued", "started", "cancelled", "failed"] = "queued"
+    state: Literal["queued", "started", "reused", "cancelled", "failed"] = "queued"
     commit_sha: str
     base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
+    branch: str | None = None
     pull_request: int | None = None
     created_at: datetime = Field(default_factory=now_utc)
+
+    @field_validator("branch")
+    @classmethod
+    def safe_branch(cls, value: str | None) -> str | None:
+        return validate_branch_name(value) if value is not None else None
 
 
 class CheckResult(BaseModel):
@@ -160,6 +218,7 @@ class PipelineResult(BaseModel):
     schema_version: Literal["ci.jenkinsservice.dev/result/v1"] = "ci.jenkinsservice.dev/result/v1"
     repository: str
     commit_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    trusted_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
     base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
     build_id: UUID | None = None
     pull_request: int | None = None
@@ -178,9 +237,18 @@ class Build(BaseModel):
     queue_item_id: UUID | None = None
     jenkins_queue_id: int | None = None
     jenkins_build_number: int | None = None
+    branch: str | None = None
+    reused_from_build_id: UUID | None = None
+    review_policy: ReviewPolicy | None = None
+    ai_review_log: AIReviewLog | None = None
     result: PipelineResult
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
+
+    @field_validator("branch")
+    @classmethod
+    def safe_branch(cls, value: str | None) -> str | None:
+        return validate_branch_name(value) if value is not None else None
 
 
 class ContractValidation(BaseModel):
@@ -202,27 +270,13 @@ class TriggerRequest(BaseModel):
     repository_id: UUID
     commit_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
     base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
+    branch: str | None = None
     pull_request: int | None = Field(default=None, ge=1)
 
-
-ReviewSeverity = Literal["critical"]
-
-
-def _critical_review_severities() -> set[ReviewSeverity]:
-    return {"critical"}
-
-
-class ReviewPolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    pull_requests_only: Literal[True] = True
-    critical_severities: set[ReviewSeverity] = Field(
-        default_factory=_critical_review_severities,
-        min_length=1,
-        max_length=1,
-    )
-    max_diff_bytes: int = Field(default=200_000, ge=1024, le=1_000_000)
+    @field_validator("branch")
+    @classmethod
+    def safe_branch(cls, value: str | None) -> str | None:
+        return validate_branch_name(value) if value is not None else None
 
 
 class BuildCompletion(BaseModel):
@@ -306,6 +360,7 @@ class ExtensionOutput(BaseModel):
         default_factory=list,
         max_length=100,
     )
+    review_log: AIReviewLog | None = None
 
 
 class ExtensionRun(BaseModel):
@@ -315,7 +370,7 @@ class ExtensionRun(BaseModel):
     action: str
     target: str
     idempotency_key: str
-    status: Literal["running", "succeeded", "failed"] = "running"
+    status: Literal["running", "succeeded", "failed", "skipped"] = "running"
     output: ExtensionOutput | None = None
     created_at: datetime = Field(default_factory=now_utc)
     completed_at: datetime | None = None

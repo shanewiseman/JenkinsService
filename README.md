@@ -51,8 +51,8 @@ PostgreSQL, the Docker API, the extension runner, review broker, and Jenkins
 agent port have no public host bindings.
 
 Activate any allowlisted repository with its trusted default branch. The helper
-prompts for the gateway administrator bearer token and triggers the initial
-multibranch scan:
+prompts for the gateway administrator bearer token and reconciles the initial
+repository folder and default-branch job:
 
 ```bash
 ./scripts/activate-repository.sh OWNER/REPOSITORY [DEFAULT_BRANCH]
@@ -82,6 +82,19 @@ For pull requests, managed Jenkins jobs load orchestration and the contract
 from the trusted target branch, then check out the proposed exact SHA only as
 untrusted source input. Fork runtimes receive no Jenkins, GitHub, MCP, or
 Docker credentials.
+
+Jenkins organizes managed executions as
+`repositories/OWNER--REPOSITORY/BRANCH`. Every pushed branch has its own job
+and history. Pull-request events use stable `PR-NUMBER` child jobs, so a branch
+with an open PR has an independent branch-push history and PR-validation
+history. Branch child jobs use bounded, collision-resistant internal names
+and show the original branch name in the Jenkins UI.
+
+Every completed build exposes a structured `ai-review.json` artifact. A
+non-PR review is recorded as skipped and does not publish a false-success
+GitHub status. When a later PR matches both an already-passed source SHA and
+the trusted target SHA, JenkinsService reuses the native result and executes
+only the missing PR review.
 
 ## Development
 

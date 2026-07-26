@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ class FakeJenkins:
         self.triggers: list[tuple[str, str, str, int | None]] = []
         self.cancellations: list[tuple[str, int]] = []
         self.queue_cancellations: list[int] = []
-        self.jobs: list[tuple[str, str, str]] = []
+        self.jobs: list[tuple[str, str, str, str, int | None]] = []
         self.queue_state: dict[str, Any] | None = None
         self.build_state: dict[str, Any] | None = None
         self.result_bytes: bytes | None = None
@@ -27,6 +28,30 @@ class FakeJenkins:
     @staticmethod
     def job_name(owner: str, name: str) -> str:
         return f"{owner}--{name}"
+
+    @staticmethod
+    def legacy_job_path(owner: str, name: str) -> str:
+        return f"repositories/{owner}--{name}--legacy"
+
+    @staticmethod
+    def branch_job_name(branch: str, pull_request: int | None = None) -> str:
+        if pull_request is not None:
+            return f"PR-{pull_request}"
+        slug = branch.replace("/", "-")[:120]
+        digest = hashlib.sha256(branch.encode()).hexdigest()[:16]
+        return f"branch-{slug}-{digest}"
+
+    @classmethod
+    def managed_job_path(
+        cls,
+        owner: str,
+        name: str,
+        branch: str,
+        pull_request: int | None = None,
+    ) -> str:
+        return (
+            f"repositories/{cls.job_name(owner, name)}/{cls.branch_job_name(branch, pull_request)}"
+        )
 
     async def close(self) -> None:
         return None
@@ -36,13 +61,23 @@ class FakeJenkins:
         owner: str,
         name: str,
         default_branch: str,
+        branch: str | None = None,
+        pull_request: int | None = None,
     ) -> None:
-        self.jobs.append((owner, name, default_branch))
+        self.jobs.append(
+            (
+                owner,
+                name,
+                default_branch,
+                branch or default_branch,
+                pull_request,
+            )
+        )
 
     async def delete_job(self, owner: str, name: str) -> None:
         return None
 
-    async def scan(self, owner: str, name: str) -> None:
+    async def scan(self, owner: str, name: str, default_branch: str) -> None:
         self.scans.append((owner, name))
 
     async def trigger(
@@ -53,6 +88,7 @@ class FakeJenkins:
         pull_request: int | None,
         base_sha: str | None = None,
         build_id: str | None = None,
+        branch: str | None = None,
     ) -> int:
         self.triggers.append((owner, name, sha, pull_request))
         return 42
@@ -95,6 +131,15 @@ class FakeGitHub:
         self.actions: list[tuple[str, str, dict[str, Any], set[str]]] = []
         self.statuses: list[dict[str, Any]] = []
         self.reviews: list[dict[str, Any]] = []
+        self.pull_request_diffs: list[dict[str, Any]] = []
+        self.diff = (
+            "diff --git a/src/example.py b/src/example.py\n"
+            "--- a/src/example.py\n"
+            "+++ b/src/example.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
 
     async def close(self) -> None:
         return None
@@ -138,6 +183,27 @@ class FakeGitHub:
         }
         self.reviews.append(value)
         return {"id": len(self.reviews), **value}
+
+    async def pull_request_diff(
+        self,
+        repository: str,
+        pull_number: int,
+        *,
+        base_sha: str,
+        head_sha: str,
+        max_bytes: int,
+    ) -> str:
+        value = {
+            "repository": repository,
+            "pull_number": pull_number,
+            "base_sha": base_sha,
+            "head_sha": head_sha,
+            "max_bytes": max_bytes,
+        }
+        self.pull_request_diffs.append(value)
+        if len(self.diff.encode("utf-8")) > max_bytes:
+            raise ValueError("diff exceeds configured limit")
+        return self.diff
 
     async def execute_action(
         self,

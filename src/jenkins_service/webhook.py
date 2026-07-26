@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .models import Principal, Scope, TriggerRequest, WebhookDelivery
+from .models import Principal, Scope, TriggerRequest, WebhookDelivery, validate_branch_name
 from .service import JenkinsService
 
 
@@ -17,6 +17,22 @@ def _repository_full_name(payload: dict[str, Any]) -> str | None:
 
 def _commit_sha(value: Any) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(r"[a-fA-F0-9]{40}", value) else None
+
+
+def _branch_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return validate_branch_name(value)
+    except ValueError:
+        return None
+
+
+def _push_branch(value: Any) -> str | None:
+    prefix = "refs/heads/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    return _branch_name(value.removeprefix(prefix))
 
 
 async def process_github_webhook(
@@ -65,11 +81,16 @@ async def dispatch_github_webhook(
         return
     if event == "push":
         commit_sha = _commit_sha(payload.get("after"))
-        if commit_sha is None or commit_sha == "0" * 40:
+        branch = _push_branch(payload.get("ref"))
+        if commit_sha is None or commit_sha == "0" * 40 or branch is None:
             return
         await service.trigger_pipeline(
             Principal(token_id="github-webhook", scopes={Scope.OPERATE}),
-            TriggerRequest(repository_id=repository.id, commit_sha=commit_sha),
+            TriggerRequest(
+                repository_id=repository.id,
+                commit_sha=commit_sha,
+                branch=branch,
+            ),
         )
     elif event == "pull_request" and payload.get("action") in {
         "opened",
@@ -86,10 +107,12 @@ async def dispatch_github_webhook(
             return
         commit_sha = _commit_sha(head.get("sha"))
         base_sha = _commit_sha(base.get("sha"))
+        branch = _branch_name(head.get("ref"))
         pull_request_number = pull_request.get("number")
         if (
             commit_sha is None
             or base_sha is None
+            or branch is None
             or not isinstance(pull_request_number, int)
             or isinstance(pull_request_number, bool)
             or pull_request_number < 1
@@ -103,6 +126,7 @@ async def dispatch_github_webhook(
                 repository_id=repository.id,
                 commit_sha=commit_sha,
                 base_sha=base_sha,
+                branch=branch,
                 pull_request=pull_request_number,
             ),
         )

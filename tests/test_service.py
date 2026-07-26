@@ -3,11 +3,14 @@ from __future__ import annotations
 import pytest
 
 from jenkins_service.models import (
+    Build,
     CancelRequest,
     ExtensionActionRequest,
     ExtensionOutput,
+    PipelineResult,
     Principal,
     RepositoryCreate,
+    ScanRequest,
     Scope,
     TriggerRequest,
 )
@@ -29,7 +32,9 @@ async def test_registration_reconciles_job_and_trigger_uses_managed_path(
             default_branch="stable",
         ),
     )
-    assert service.jenkins.jobs == [("allowed", "project", "stable")]
+    assert service.jenkins.jobs == [
+        ("allowed", "project", "stable", "stable", None),
+    ]
 
     queue = await service.trigger_pipeline(
         principal,
@@ -41,9 +46,76 @@ async def test_registration_reconciles_job_and_trigger_uses_managed_path(
     )
     assert queue.jenkins_queue_id == 42
     build = (await store.list_builds())[0]
-    assert build.jenkins_job == "repositories/allowed--project"
+    assert service.jenkins.jobs[-1] == (
+        "allowed",
+        "project",
+        "stable",
+        "stable",
+        3,
+    )
+    assert build.jenkins_job == "repositories/allowed--project/PR-3"
+    assert build.branch == "stable"
     assert build.jenkins_queue_id == 42
     assert build.queue_item_id == queue.id
+
+
+async def test_non_pr_branches_receive_separate_managed_jobs(
+    service,
+    store,
+) -> None:
+    principal = Principal(token_id="operator", scopes={Scope.OPERATE})
+    repository = await service.register_repository(
+        principal,
+        RepositoryCreate(owner="allowed", name="project", default_branch="master"),
+    )
+
+    queue = await service.trigger_pipeline(
+        principal,
+        TriggerRequest(
+            repository_id=repository.id,
+            commit_sha="c" * 40,
+            branch="feature/display-refresh",
+        ),
+    )
+
+    build = (await store.list_builds())[0]
+    assert queue.branch == "feature/display-refresh"
+    assert build.branch == "feature/display-refresh"
+    assert build.jenkins_job == (
+        "repositories/allowed--project/"
+        + service.jenkins.branch_job_name("feature/display-refresh")
+    )
+
+
+async def test_hierarchy_reconciliation_preserves_legacy_build_lookup(
+    service,
+    store,
+) -> None:
+    principal = Principal(token_id="operator", scopes={Scope.OPERATE})
+    repository = await service.register_repository(
+        principal,
+        RepositoryCreate(owner="allowed", name="project"),
+    )
+    legacy_build = Build(
+        repository_id=repository.id,
+        jenkins_job="repositories/allowed--project",
+        result=PipelineResult(
+            repository=repository.full_name,
+            commit_sha="d" * 40,
+            status="passed",
+        ),
+    )
+    await store.save_build(legacy_build)
+
+    result = await service.scan_repository(
+        principal,
+        ScanRequest(repository_id=repository.id),
+    )
+
+    assert result.detail == "repository hierarchy reconciled"
+    assert (await store.get_build(legacy_build.id)).jenkins_job == (
+        "repositories/allowed--project--legacy"
+    )
 
 
 async def test_build_read_reconciles_queue_and_canonical_result(

@@ -111,6 +111,10 @@ def create_mcp_server(service: Any, registry: OperationRegistry) -> FastMCP:
     async def build(build_id: str) -> Any:
         return await resource("build", path={"build_id": build_id})
 
+    @mcp.resource("jenkinsservice://builds/{build_id}/artifacts/ai-review")
+    async def build_ai_review_log(build_id: str) -> Any:
+        return await resource("build_ai_review_log", path={"build_id": build_id})
+
     @mcp.resource("jenkinsservice://builds/{build_id}/logs/{start}")
     async def build_log(build_id: str, start: str) -> Any:
         return await resource(
@@ -192,6 +196,7 @@ def create_mcp_server(service: Any, registry: OperationRegistry) -> FastMCP:
     async def trigger_pipeline(
         repository_id: UUID,
         commit_sha: str,
+        branch: str | None = None,
         pull_request: int | None = None,
     ) -> Any:
         return await tool(
@@ -199,6 +204,7 @@ def create_mcp_server(service: Any, registry: OperationRegistry) -> FastMCP:
             TriggerRequest(
                 repository_id=repository_id,
                 commit_sha=commit_sha,
+                branch=branch,
                 pull_request=pull_request,
             ),
         )

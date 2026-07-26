@@ -65,7 +65,12 @@ def activation_server(
                 self.respond(repository)
                 return
             assert self.path == "/api/v1/repositories/scan"
-            self.respond({"id": REPOSITORY_ID, "detail": "scan requested"})
+            self.respond(
+                {
+                    "id": REPOSITORY_ID,
+                    "detail": "repository hierarchy reconciled",
+                }
+            )
 
         def do_PATCH(self) -> None:
             body = self.request_body()

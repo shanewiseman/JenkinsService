@@ -13,6 +13,7 @@ def call(Map settings = [:]) {
     boolean requiredFailure = false
     String buildLabel = "dev.jenkinsservice.build=${env.JOB_NAME}-${env.BUILD_NUMBER}".replaceAll('[^A-Za-z0-9_.=-]', '-')
     String buildNetwork = ''
+    String trustedSha = ''
     Map contract = [:]
 
     node('orchestrator') {
@@ -33,6 +34,10 @@ def call(Map settings = [:]) {
                         ]
                     ])
                 }
+                trustedSha = sh(
+                    script: 'git -C _trusted rev-parse HEAD',
+                    returnStdout: true
+                ).trim()
                 String raw = readFile('_trusted/.jenkins/pipeline.yaml')
                 writeFile file: '_pipeline.yaml', text: raw
                 sh '''
@@ -170,6 +175,7 @@ PY
                         schema_version: 'ci.jenkinsservice.dev/result/v1',
                         repository: settings.repository,
                         commit_sha: params.COMMIT_SHA,
+                        trusted_sha: trustedSha ?: null,
                         base_sha: params.BASE_SHA ?: null,
                         build_id: params.BUILD_ID ?: null,
                         pull_request: params.PULL_REQUEST ? params.PULL_REQUEST as int : null,
@@ -216,7 +222,7 @@ PY
                 }
             }
             stage('Build completion callback') {
-                callbackStatus = notifyBuildCompletion(contract, settings)
+                callbackStatus = notifyBuildCompletion(contract, settings, trustedSha)
             }
             cleanWs deleteDirs: true, disableDeferredWipeout: true, notFailBuild: true
             if (callbackStatus != 0) {
@@ -226,7 +232,7 @@ PY
     }
 }
 
-private int notifyBuildCompletion(Map contract, Map settings) {
+private int notifyBuildCompletion(Map contract, Map settings, String trustedSha) {
     if (!env.BUILD_CALLBACK_URL || !params.BUILD_ID) {
         echo 'No build completion callback configured; skipping notification'
         return 0
@@ -240,6 +246,7 @@ private int notifyBuildCompletion(Map contract, Map settings) {
             schema_version: 'ci.jenkinsservice.dev/result/v1',
             repository: settings.repository,
             commit_sha: params.COMMIT_SHA,
+            trusted_sha: trustedSha ?: null,
             base_sha: params.BASE_SHA ?: null,
             build_id: params.BUILD_ID,
             pull_request: params.PULL_REQUEST ? params.PULL_REQUEST as int : null,
