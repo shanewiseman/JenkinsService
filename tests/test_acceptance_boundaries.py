@@ -145,7 +145,11 @@ def test_compose_routes_only_public_services_through_traefik() -> None:
     assert services["gateway"]["ports"] == ["127.0.0.1:${API_PORT:-18000}:8000"]
 
     casc = (ROOT / "docker/jenkins/casc.yaml").read_text(encoding="utf-8")
+    java_opts = services["jenkins"]["environment"]["JAVA_OPTS"]
     agent_start = (ROOT / "docker/agent/start-agent.sh").read_text(encoding="utf-8")
+    assert "-Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true" in java_opts
+    assert 'remote: "file:///usr/share/jenkins/ref/shared-library"' in casc
+    assert "allowVersionOverride: false" in casc
     assert "slaveAgentPort: -1" in casc
     assert services["orchestrator"]["environment"]["JENKINS_WEB_SOCKET"] == "true"
     assert "-webSocket" not in agent_start
