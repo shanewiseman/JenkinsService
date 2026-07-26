@@ -99,3 +99,28 @@ def test_review_policy_cannot_expand_the_blocking_severities() -> None:
     result = validate_contract_content(yaml.safe_dump(document))
     assert not result.valid
     assert any("criticalSeverities" in error for error in result.errors)
+
+
+def test_review_policy_accepts_safe_literal_excluded_paths() -> None:
+    document = yaml.safe_load((ROOT / "examples/pipeline.yaml").read_text())
+    document["review"] = {
+        "excludedPaths": ["requirements.lock", "requirements-dev.lock"],
+    }
+
+    result = validate_contract_content(yaml.safe_dump(document))
+
+    assert result.valid, result.errors
+
+
+def test_review_policy_rejects_unsafe_or_duplicate_excluded_paths() -> None:
+    document = yaml.safe_load((ROOT / "examples/pipeline.yaml").read_text())
+    document["review"] = {
+        "excludedPaths": ["../outside.lock", "requirements.lock", "requirements.lock"],
+    }
+
+    result = validate_contract_content(yaml.safe_dump(document))
+
+    assert not result.valid
+    combined = "\n".join(result.errors)
+    assert "unique" in combined
+    assert "relative POSIX path" in combined

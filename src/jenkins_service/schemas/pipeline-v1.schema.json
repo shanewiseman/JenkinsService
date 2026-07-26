@@ -104,6 +104,13 @@
           "minimum": 1024,
           "maximum": 1000000,
           "default": 200000
+        },
+        "excludedPaths": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/relativePath"},
+          "default": []
         }
       },
       "default": {}
