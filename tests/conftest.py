@@ -51,6 +51,8 @@ class FakeJenkins:
         name: str,
         sha: str,
         pull_request: int | None,
+        base_sha: str | None = None,
+        build_id: str | None = None,
     ) -> int:
         self.triggers.append((owner, name, sha, pull_request))
         return 42
@@ -91,9 +93,51 @@ class FakeJenkins:
 class FakeGitHub:
     def __init__(self) -> None:
         self.actions: list[tuple[str, str, dict[str, Any], set[str]]] = []
+        self.statuses: list[dict[str, Any]] = []
+        self.reviews: list[dict[str, Any]] = []
 
     async def close(self) -> None:
         return None
+
+    async def set_status(
+        self,
+        repository: str,
+        sha: str,
+        *,
+        context: str,
+        state: str,
+        description: str,
+        target_url: str | None = None,
+    ) -> dict[str, Any]:
+        value = {
+            "repository": repository,
+            "sha": sha,
+            "context": context,
+            "state": state,
+            "description": description,
+            "target_url": target_url,
+        }
+        self.statuses.append(value)
+        return {"id": len(self.statuses), **value}
+
+    async def create_review(
+        self,
+        repository: str,
+        pull_number: int,
+        *,
+        commit_sha: str,
+        body: str,
+        comments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        value = {
+            "repository": repository,
+            "pull_number": pull_number,
+            "commit_sha": commit_sha,
+            "body": body,
+            "comments": comments,
+        }
+        self.reviews.append(value)
+        return {"id": len(self.reviews), **value}
 
     async def execute_action(
         self,

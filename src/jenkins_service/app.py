@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -9,11 +10,13 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
-from .clients import GitHubClient, JenkinsClient, UpstreamError
+from .clients import GitHubClient, JenkinsClient, ReviewBrokerClient, UpstreamError
 from .config import Settings, get_settings
 from .extensions import ExtensionCatalog, ExtensionRunnerClient
 from .mcp_server import create_mcp_server
+from .models import BuildCompletion, Principal, Scope
 from .registry import OperationRegistry
 from .request_context import current_principal, current_request_id
 from .security import (
@@ -21,10 +24,11 @@ from .security import (
     SlidingWindowLimiter,
     TokenAuthenticator,
     bearer_token,
+    verify_hmac_signature,
     verify_webhook_signature,
 )
 from .service import JenkinsService
-from .store import PostgresStore, Store
+from .store import NotFoundError, PostgresStore, Store
 from .webhook import dispatch_github_webhook, process_github_webhook
 
 
@@ -79,6 +83,11 @@ def create_app(
             if settings.github_write_token_file.exists()
             else "unconfigured"
         )
+        review_broker_token = (
+            settings.read_secret(settings.review_broker_token_file)
+            if settings.review_broker_token_file.exists()
+            else "unconfigured"
+        )
         installed_catalog = Path("/app/extensions")
         source_catalog = Path(__file__).parents[2] / "extensions"
         catalog = ExtensionCatalog.from_directory(
@@ -94,6 +103,10 @@ def create_app(
                 github_web_url=settings.github_web_url,
             ),
             github=GitHubClient(settings.github_api_url, github_write_token),
+            review_broker=ReviewBrokerClient(
+                settings.review_broker_url,
+                review_broker_token,
+            ),
             extension_runner=ExtensionRunnerClient(
                 settings.extension_runner_url,
                 settings.max_extension_output_bytes,
@@ -102,6 +115,9 @@ def create_app(
             github_allowlist=settings.github_allowlist,
             service_version=settings.service_version,
             max_artifact_bytes=settings.max_artifact_bytes,
+            public_base_url=str(settings.public_base_url) if settings.public_base_url else None,
+            openai_model=settings.openai_model,
+            review_prompt_version=settings.review_prompt_version,
             redactor=Redactor(settings.log_redaction_patterns),
         )
     if authenticator is None and settings.api_tokens_file.exists():
@@ -122,6 +138,8 @@ def create_app(
                 await store.close()
             await service.jenkins.close()
             await service.github.close()
+            if service.review_broker is not None:
+                await service.review_broker.close()
             await service.extension_runner.close()
 
     app = FastAPI(
@@ -152,6 +170,7 @@ def create_app(
             "/healthz",
             "/readyz",
             "/webhooks/github",
+            "/internal/build-completions",
         }
         if settings.require_https and not exempt:
             forwarded = (
@@ -229,6 +248,48 @@ def create_app(
             {"status": "ready" if ready_state else "not-ready"},
             status_code=200 if ready_state else 503,
         )
+
+    @app.post("/internal/build-completions", status_code=202, include_in_schema=False)
+    async def build_completion(
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        body_buffer = bytearray()
+        async for chunk in request.stream():
+            body_buffer.extend(chunk)
+            if len(body_buffer) > settings.max_webhook_bytes:
+                raise HTTPException(status_code=413, detail="completion payload too large")
+        body = bytes(body_buffer)
+        if not settings.build_callback_secret_file.exists():
+            raise HTTPException(status_code=503, detail="completion secret is not configured")
+        secret = settings.read_secret(settings.build_callback_secret_file)
+        if not verify_hmac_signature(
+            secret,
+            body,
+            request.headers.get("x-jenkinsservice-signature"),
+        ):
+            raise HTTPException(status_code=401, detail="invalid completion signature")
+        try:
+            completion = BuildCompletion.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="invalid completion payload") from exc
+        if abs(int(time.time()) - completion.timestamp) > settings.build_callback_max_age_seconds:
+            raise HTTPException(status_code=401, detail="expired completion payload")
+        principal = Principal(
+            token_id="jenkins-callback",  # noqa: S106 - fixed internal audit identity
+            scopes={Scope.OPERATE},
+        )
+        try:
+            inserted = await service.complete_build(principal, completion)
+        except (NotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if inserted or completion.result.pull_request is not None:
+            background_tasks.add_task(service.process_ai_review, principal, completion)
+        return {
+            "accepted": True,
+            "duplicate": not inserted,
+            "callback_id": completion.callback_id,
+        }
 
     @app.post("/webhooks/github", status_code=202, include_in_schema=False)
     async def github_webhook(

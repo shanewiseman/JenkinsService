@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -106,3 +108,58 @@ async def test_github_client_enforces_declared_actions() -> None:
                 {"sha": "a" * 40, "body": {}},
                 {"issue_comment"},
             )
+
+
+async def test_github_status_and_batched_review_payloads() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, json={"id": len(requests)})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GitHubClient("https://api.github.test", "token", http)
+        await client.set_status(
+            "allowed/repo",
+            "a" * 40,
+            context="jenkinsservice/native-ci",
+            state="success",
+            description="Native Jenkins validation passed",
+            target_url="https://ci.example.test/api/v1/builds/123",
+        )
+        await client.create_review(
+            "allowed/repo",
+            17,
+            commit_sha="a" * 40,
+            body="Review summary",
+            comments=[
+                {
+                    "path": "src/example.py",
+                    "line": 9,
+                    "side": "RIGHT",
+                    "body": "Inline finding",
+                }
+            ],
+        )
+
+    assert requests[0].url.path == f"/repos/allowed/repo/statuses/{'a' * 40}"
+    assert json.loads(requests[0].content) == {
+        "state": "success",
+        "context": "jenkinsservice/native-ci",
+        "description": "Native Jenkins validation passed",
+        "target_url": "https://ci.example.test/api/v1/builds/123",
+    }
+    assert requests[1].url.path == "/repos/allowed/repo/pulls/17/reviews"
+    assert json.loads(requests[1].content) == {
+        "commit_id": "a" * 40,
+        "event": "COMMENT",
+        "body": "Review summary",
+        "comments": [
+            {
+                "path": "src/example.py",
+                "line": 9,
+                "side": "RIGHT",
+                "body": "Inline finding",
+            }
+        ],
+    }

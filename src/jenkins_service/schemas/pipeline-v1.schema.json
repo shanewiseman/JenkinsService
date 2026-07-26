@@ -89,6 +89,25 @@
       },
       "default": {}
     },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": true},
+        "pullRequestsOnly": {"type": "boolean", "const": true, "default": true},
+        "criticalSeverities": {
+          "const": ["critical"],
+          "default": ["critical"]
+        },
+        "maxDiffBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 1000000,
+          "default": 200000
+        }
+      },
+      "default": {}
+    },
     "artifacts": {
       "type": "array",
       "items": {
@@ -164,6 +183,10 @@
         },
         "required": {"type": "boolean", "default": true},
         "timeoutMinutes": {"type": "integer", "minimum": 1, "maximum": 120},
+        "network": {
+          "enum": ["none", "egress"],
+          "default": "none"
+        },
         "environment": {
           "type": "object",
           "propertyNames": {"pattern": "^[A-Z_][A-Z0-9_]*$"},

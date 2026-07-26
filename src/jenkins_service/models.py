@@ -113,9 +113,11 @@ class Repository(RepositoryCreate):
 class QueueItem(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     repository_id: UUID
+    build_id: UUID | None = None
     jenkins_queue_id: int | None = None
     state: Literal["queued", "started", "cancelled", "failed"] = "queued"
     commit_sha: str
+    base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
     pull_request: int | None = None
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -158,6 +160,8 @@ class PipelineResult(BaseModel):
     schema_version: Literal["ci.jenkinsservice.dev/result/v1"] = "ci.jenkinsservice.dev/result/v1"
     repository: str
     commit_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
+    build_id: UUID | None = None
     pull_request: int | None = None
     status: Literal["queued", "running", "passed", "failed", "cancelled"]
     started_at: datetime | None = None
@@ -197,7 +201,39 @@ class TriggerRequest(BaseModel):
 
     repository_id: UUID
     commit_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    base_sha: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40}$")
     pull_request: int | None = Field(default=None, ge=1)
+
+
+ReviewSeverity = Literal["critical"]
+
+
+def _critical_review_severities() -> set[ReviewSeverity]:
+    return {"critical"}
+
+
+class ReviewPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    pull_requests_only: Literal[True] = True
+    critical_severities: set[ReviewSeverity] = Field(
+        default_factory=_critical_review_severities,
+        min_length=1,
+        max_length=1,
+    )
+    max_diff_bytes: int = Field(default=200_000, ge=1024, le=1_000_000)
+
+
+class BuildCompletion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    callback_id: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9_.:-]+$")
+    timestamp: int = Field(ge=0)
+    build_id: UUID
+    result: PipelineResult
+    review: ReviewPolicy = Field(default_factory=ReviewPolicy)
+    diff: str | None = Field(default=None, max_length=1_000_000)
 
 
 class RetryRequest(BaseModel):

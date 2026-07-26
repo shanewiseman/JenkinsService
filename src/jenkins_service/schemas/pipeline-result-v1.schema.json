@@ -8,6 +8,11 @@
     "schema_version": {"const": "ci.jenkinsservice.dev/result/v1"},
     "repository": {"type": "string"},
     "commit_sha": {"type": "string", "pattern": "^[a-fA-F0-9]{40}$"},
+    "base_sha": {
+      "type": ["string", "null"],
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "build_id": {"type": ["string", "null"], "format": "uuid"},
     "pull_request": {"type": ["integer", "null"], "minimum": 1},
     "status": {"enum": ["queued", "running", "passed", "failed", "cancelled"]},
     "started_at": {"type": ["string", "null"], "format": "date-time"},

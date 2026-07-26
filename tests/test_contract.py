@@ -57,9 +57,7 @@ def test_paths_secrets_mounts_and_duplicate_ids_are_rejected() -> None:
 def test_docker_client_environment_is_rejected_at_runtime_and_step_levels() -> None:
     document = yaml.safe_load((ROOT / "examples/pipeline.yaml").read_text())
     document["runtime"]["environment"]["DOCKER_HOST"] = "tcp://docker:2376"
-    document["steps"]["tests"][0].setdefault("environment", {})[
-        "DOCKER_TLS_VERIFY"
-    ] = "1"
+    document["steps"]["tests"][0].setdefault("environment", {})["DOCKER_TLS_VERIFY"] = "1"
 
     result = validate_contract_content(yaml.safe_dump(document))
 
@@ -80,3 +78,24 @@ def test_structurally_invalid_document_skips_semantic_validation() -> None:
     result = validate_contract_content("steps: []")
     assert not result.valid
     assert any(error.startswith("steps:") for error in result.errors)
+
+
+def test_dogfood_contract_uses_bootstrap_only_egress_and_critical_review() -> None:
+    path = ROOT / ".jenkins" / "pipeline.yaml"
+    result = validate_contract_file(path)
+    assert result.valid, result.errors
+    document = yaml.safe_load(path.read_text())
+    assert document["runtime"]["network"] == "none"
+    steps = [step for group in document["steps"].values() for step in group]
+    assert [step["id"] for step in steps if step.get("network") == "egress"] == [
+        "dependency-bootstrap"
+    ]
+    assert document["review"]["criticalSeverities"] == ["critical"]
+
+
+def test_review_policy_cannot_expand_the_blocking_severities() -> None:
+    document = yaml.safe_load((ROOT / "examples/pipeline.yaml").read_text())
+    document["review"] = {"criticalSeverities": ["critical", "high"]}
+    result = validate_contract_content(yaml.safe_dump(document))
+    assert not result.valid
+    assert any("criticalSeverities" in error for error in result.errors)
