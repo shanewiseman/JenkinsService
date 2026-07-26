@@ -75,3 +75,6 @@ review:
   pullRequestsOnly: true
   criticalSeverities: [critical]
   maxDiffBytes: 200000
+  excludedPaths:
+    - requirements.lock
+    - requirements-dev.lock
