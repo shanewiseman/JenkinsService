@@ -147,7 +147,10 @@ def test_compose_routes_only_public_services_through_traefik() -> None:
     casc = (ROOT / "docker/jenkins/casc.yaml").read_text(encoding="utf-8")
     agent_start = (ROOT / "docker/agent/start-agent.sh").read_text(encoding="utf-8")
     assert "slaveAgentPort: -1" in casc
-    assert "-webSocket" in agent_start
+    assert services["orchestrator"]["environment"]["JENKINS_WEB_SOCKET"] == "true"
+    assert "-webSocket" not in agent_start
+    assert '-url "$JENKINS_URL"' not in agent_start
+    assert '-name "$JENKINS_AGENT_NAME"' not in agent_start
 
 
 def test_pipeline_cleanup_quotes_the_complete_label_filter() -> None:

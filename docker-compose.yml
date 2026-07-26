@@ -108,6 +108,7 @@ services:
     environment:
       JENKINS_URL: http://jenkins:8080/jenkins/
       JENKINS_AGENT_NAME: orchestrator
+      JENKINS_WEB_SOCKET: "true"
       BUILD_CALLBACK_URL: http://gateway:8000/internal/build-completions
       DOCKER_HOST: tcp://docker:2376
       DOCKER_TLS_VERIFY: "1"
