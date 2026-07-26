@@ -260,23 +260,27 @@ private int notifyBuildCompletion(Map contract, Map settings, String trustedSha)
     }
     Map review = (contract.review ?: [:]) as Map
     int maxDiffBytes = (review.maxDiffBytes ?: 200000) as int
+    List excludedPaths = (review.excludedPaths ?: []) as List
     String reviewDiff = null
     if (review.enabled != false && params.PULL_REQUEST && params.BASE_SHA && fileExists('source/.git')) {
         int diffStatus = withEnv([
             "REVIEW_BASE_SHA=${params.BASE_SHA}",
             "REVIEW_HEAD_SHA=${params.COMMIT_SHA}",
-            "REVIEW_MAX_DIFF_BYTES=${maxDiffBytes}"
+            "REVIEW_MAX_DIFF_BYTES=${maxDiffBytes}",
+            "REVIEW_EXCLUDED_PATHS=${JsonOutput.toJson(excludedPaths)}"
         ]) {
             sh(
                 script: """
                     set +x
                     python3 - <<'PY'
+import json
 import os
 import resource
 import subprocess
 from pathlib import Path
 
 limit = int(os.environ["REVIEW_MAX_DIFF_BYTES"])
+excluded_paths = json.loads(os.environ["REVIEW_EXCLUDED_PATHS"])
 destination = Path("_review.diff")
 destination.unlink(missing_ok=True)
 
@@ -286,12 +290,17 @@ def bound_output():
 
 
 try:
+    command = [
+        "git", "-C", "source", "diff", "--no-ext-diff", "--unified=3",
+        os.environ["REVIEW_BASE_SHA"], os.environ["REVIEW_HEAD_SHA"], "--", ".",
+    ]
+    command.extend(
+        f":(top,literal,exclude){path}"
+        for path in excluded_paths
+    )
     with destination.open("wb") as output:
         completed = subprocess.run(
-            [
-                "git", "-C", "source", "diff", "--no-ext-diff", "--unified=3",
-                os.environ["REVIEW_BASE_SHA"], os.environ["REVIEW_HEAD_SHA"], "--",
-            ],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.DEVNULL,

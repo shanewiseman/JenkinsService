@@ -86,6 +86,8 @@ def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
     assert '"git", "-C", "source", "diff", "--no-ext-diff", "--unified=3"' in pipeline
     assert "resource.RLIMIT_FSIZE" in pipeline
     assert "REVIEW_BASE_SHA" in pipeline
+    assert "REVIEW_EXCLUDED_PATHS" in pipeline
+    assert 'f":(top,literal,exclude){path}"' in pipeline
     assert "diff: reviewDiff" in pipeline
 
 

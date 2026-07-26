@@ -21,6 +21,12 @@ orchestration generates that diff from the checked-out Git objects and signs it
 inside the replay-resistant completion callback; repository containers and the
 review broker never receive the GitHub read PAT.
 
+The trusted `review.excludedPaths` list may omit exact relative paths, such as
+generated dependency lockfiles, from the diff sent to the AI review broker.
+Entries are literal paths rather than glob patterns. Exclusion affects only AI
+review input: checkout, tests, built-in security scans, dependency validation,
+SBOM generation, and artifact publication continue to process the files.
+
 The canonical result records the exact trusted-branch SHA that supplied the
 contract. JenkinsService uses the source SHA and trusted SHA together as the
 native-result reuse key. A later PR may reuse passed native checks for that

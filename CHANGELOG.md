@@ -16,6 +16,9 @@ All notable changes use Keep a Changelog categories.
 
 ### Added
 
+- Trusted pipeline contracts can exclude exact generated paths from the
+  bounded AI-review diff without excluding them from checkout, tests, security
+  scans, dependency validation, SBOMs, or artifacts.
 - Durable `ai-review.json` build artifacts for passed, failed, and skipped
   reviews, plus exact source/trusted-SHA native result reuse that runs a
   previously missing PR-only review without rerunning repository checks.

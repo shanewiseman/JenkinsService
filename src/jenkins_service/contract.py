@@ -136,6 +136,13 @@ def _semantic_errors(document: dict[str, Any]) -> list[str]:
     for index, artifact in enumerate(artifacts):
         if isinstance(artifact, dict) and isinstance(artifact.get("path"), str):
             _relative_safe_path(artifact["path"], f"artifacts[{index}].path", errors)
+    review_value = document.get("review", {})
+    review = review_value if isinstance(review_value, dict) else {}
+    excluded_paths_value = review.get("excludedPaths", [])
+    excluded_paths = excluded_paths_value if isinstance(excluded_paths_value, list) else []
+    for index, path in enumerate(excluded_paths):
+        if isinstance(path, str):
+            _relative_safe_path(path, f"review.excludedPaths[{index}]", errors)
     return errors
 
 
