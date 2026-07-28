@@ -127,7 +127,7 @@ services:
       - "traefik.enable=false"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    pids_limit: 512
+    pids_limit: 2048 
     mem_limit: 2g
     cpus: 2
     logging: *default-logging
