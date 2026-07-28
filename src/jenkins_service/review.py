@@ -244,7 +244,9 @@ class OpenAIReviewClient:
                 "only for an exploitable or catastrophic issue that must block merging. "
                 "Return all findings in one response so they can be published in a single "
                 "GitHub review. If there are no findings, state that clearly in the review "
-                "summary."
+                "summary. Look for existing comments produced by yourself, if the comment "
+                "has been existed or has been closed do not repeat the comment. "
+                "The user has the final say as to whether to accept the comment or not."
             ),
             "input": json.dumps(review_input, separators=(",", ":")),
             "reasoning": {"effort": self.config.reasoning_effort},
