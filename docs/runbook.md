@@ -10,7 +10,8 @@ Routine work:
 - rotate bearer tokens by adding a new digest, restarting gateway, migrating
   clients, then removing the old digest
 - rotate GitHub/Jenkins secrets one credential at a time and restart only
-  consumers
+  consumers; rotating `jenkins_readonly_api_token` revokes the previously
+  managed direct-read token when Jenkins restarts
 - review audit, rejected webhook, extension-run, and Jenkins cleanup records
 - prune only objects labeled `dev.jenkinsservice.*`
 - test restore procedures quarterly

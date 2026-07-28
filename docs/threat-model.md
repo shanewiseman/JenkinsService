@@ -15,6 +15,8 @@ Controls include:
 - hashed scoped API tokens, constant-time comparison, Origin checks, rate
   limits, HTTPS proxy enforcement, request IDs, and audit records
 - curated operations with no raw Jenkins proxy
+- a distinct direct Jenkins reader restricted to read permissions, with its
+  API token mounted only into the controller
 - output schemas, action capabilities, idempotency, immutable images, resource
   limits, path validation, log redaction, and deterministic cleanup
 - networkless repository containers by default, with explicit contract opt-in
@@ -24,6 +26,9 @@ Controls include:
 Residual risks include static long-lived MCP tokens, the shared privileged
 DinD daemon, automatic write-PAT actions, Jenkins/plugin supply-chain risk,
 dependency-download risk in opt-in egress runtimes, and single-host failure.
+Direct Jenkins reads bypass gateway audit records and can disclose job
+metadata, console logs, and artifacts; issue that credential only to trusted
+readers and rotate it independently.
 Rotate all credentials after suspected compromise.
 For broadly hosted deployments, replace static tokens with OAuth 2.1
 discovery and short-lived tokens.

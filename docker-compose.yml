@@ -58,11 +58,14 @@ services:
         -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true
       JENKINS_OPTS: --prefix=/jenkins
       JENKINS_ADMIN_USER: admin
+      JENKINS_READONLY_USER: ${JENKINS_READONLY_USER:-jenkins-reader}
       JENKINS_PUBLIC_URL: ${JENKINS_PUBLIC_URL:?JENKINS_PUBLIC_URL is required}
       JENKINS_AGENT_EXECUTORS: ${JENKINS_AGENT_EXECUTORS:-4}
     secrets:
       - jenkins_admin_password
       - jenkins_api_token
+      - jenkins_readonly_api_token
+      - jenkins_readonly_password
       - github_read_pat
     volumes:
       - jenkins-data:/var/jenkins_home
@@ -320,6 +323,10 @@ secrets:
     file: ./secrets/jenkins_admin_password
   jenkins_api_token:
     file: ./secrets/jenkins_api_token
+  jenkins_readonly_api_token:
+    file: ./secrets/jenkins_readonly_api_token
+  jenkins_readonly_password:
+    file: ./secrets/jenkins_readonly_password
   api_tokens:
     file: ./secrets/api_tokens
   github_read_pat:

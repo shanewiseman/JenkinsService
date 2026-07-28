@@ -56,6 +56,8 @@ def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
     secret_sets = {name: set(service.get("secrets", [])) for name, service in services.items()}
 
     assert "github_read_pat" in secret_sets["jenkins"]
+    assert "jenkins_readonly_api_token" in secret_sets["jenkins"]
+    assert "jenkins_readonly_password" in secret_sets["jenkins"]
     assert "github_webhook_secret" not in secret_sets["jenkins"]
     assert "github_read_pat" not in secret_sets["gateway"]
     assert {"github_write_pat", "github_webhook_secret"} <= secret_sets["gateway"]
@@ -78,6 +80,8 @@ def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
         "github_read_pat",
         "github_write_pat",
         "jenkins_api_token",
+        "jenkins_readonly_api_token",
+        "jenkins_readonly_password",
         "github_webhook_secret",
         "build_callback_secret:/workspace",
         "/certs/client:/workspace",
@@ -89,6 +93,39 @@ def test_compose_mounts_credentials_only_into_their_trusted_consumers() -> None:
     assert "REVIEW_EXCLUDED_PATHS" in pipeline
     assert 'f":(top,literal,exclude){path}"' in pipeline
     assert "diff: reviewDiff" in pipeline
+
+    for service_name, mounted_secrets in secret_sets.items():
+        if service_name != "jenkins":
+            assert "jenkins_readonly_api_token" not in mounted_secrets
+            assert "jenkins_readonly_password" not in mounted_secrets
+
+
+def test_jenkins_readonly_user_has_only_read_permissions() -> None:
+    casc = yaml.safe_load((ROOT / "docker/jenkins/casc.yaml").read_text(encoding="utf-8"))
+    realm_users = casc["jenkins"]["securityRealm"]["local"]["users"]
+    matrix_entries = casc["jenkins"]["authorizationStrategy"]["globalMatrix"]["entries"]
+
+    reader = next(user for user in realm_users if user["id"] == "${JENKINS_READONLY_USER}")
+    assert reader["password"] == "${file:/run/secrets/jenkins_readonly_password}"
+
+    reader_entry = next(
+        entry["user"]
+        for entry in matrix_entries
+        if entry["user"]["name"] == "${JENKINS_READONLY_USER}"
+    )
+    assert set(reader_entry["permissions"]) == {
+        "Overall/Read",
+        "Job/Discover",
+        "Job/Read",
+        "View/Read",
+    }
+
+    token_bootstrap = (ROOT / "docker/jenkins/readonly-api-token.groovy").read_text(
+        encoding="utf-8"
+    )
+    assert 'new File("/run/secrets/jenkins_readonly_api_token")' in token_bootstrap
+    assert 'addFixedNewToken("jenkinsservice-readonly", token)' in token_bootstrap
+    assert "revokeAllTokens()" in token_bootstrap
 
 
 def test_compose_routes_only_public_services_through_traefik() -> None:

@@ -16,6 +16,8 @@ jenkins:
           password: "${file:/run/secrets/jenkins_admin_password}"
         - id: "jenkinsservice"
           password: "${file:/run/secrets/jenkins_api_token}"
+        - id: "${JENKINS_READONLY_USER}"
+          password: "${file:/run/secrets/jenkins_readonly_password}"
   authorizationStrategy:
     globalMatrix:
       entries:
@@ -36,6 +38,13 @@ jenkins:
               - "Job/Create"
               - "Job/Delete"
               - "Job/Discover"
+        - user:
+            name: "${JENKINS_READONLY_USER}"
+            permissions:
+              - "Overall/Read"
+              - "Job/Discover"
+              - "Job/Read"
+              - "View/Read"
   nodes:
     - permanent:
         name: "orchestrator"

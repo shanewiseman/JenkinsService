@@ -26,9 +26,16 @@ create_secret() {
 create_secret secrets/postgres_password 32
 create_secret secrets/jenkins_admin_password 24
 create_secret secrets/jenkins_api_token 32
+create_secret secrets/jenkins_readonly_password 32
 create_secret secrets/github_webhook_secret 32
 create_secret secrets/build_callback_secret 32
 create_secret secrets/review_broker_token 32
+
+if [ ! -s secrets/jenkins_readonly_api_token ]; then
+  printf '11%s' "$(openssl rand -hex 16)" >secrets/jenkins_readonly_api_token
+  chmod 600 secrets/jenkins_readonly_api_token
+  echo "created secrets/jenkins_readonly_api_token"
+fi
 
 if [ ! -s secrets/api_tokens ]; then
   api_token="$(openssl rand -hex 32)"
