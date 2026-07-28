@@ -34,7 +34,10 @@ Set `PUBLIC_BASE_URL`, `JENKINS_HOST`, `DMZ_NETWORK`,
 `ALLOWED_ORIGINS` in `.env` before startup. Place the two fine-grained GitHub
 PATs in `secrets/github_read_pat` and `secrets/github_write_pat`; they must be
 different credentials. The bootstrap script creates other missing secrets
-without replacing existing values and prints the new API bearer token once.
+without replacing non-empty existing values and prints the new API bearer
+token once.
+It also creates a dedicated `jenkins-reader` identity and API token for
+authenticated, direct read-only access to Jenkins.
 
 The services bind only to loopback by default:
 

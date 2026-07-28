@@ -5,6 +5,7 @@ RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
 
 COPY --chown=jenkins:jenkins docker/jenkins/casc.yaml /usr/share/jenkins/ref/casc.yaml
 COPY --chown=jenkins:jenkins docker/jenkins/jobs.groovy /usr/share/jenkins/ref/init.groovy.d/jobs.groovy
+COPY --chown=jenkins:jenkins docker/jenkins/readonly-api-token.groovy /usr/share/jenkins/ref/init.groovy.d/readonly-api-token.groovy
 COPY --chown=jenkins:jenkins shared-library /usr/share/jenkins/ref/shared-library
 RUN git -C /usr/share/jenkins/ref/shared-library init --initial-branch=main \
     && git -C /usr/share/jenkins/ref/shared-library config user.name JenkinsService \

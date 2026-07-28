@@ -170,6 +170,8 @@ version control:
 | `secrets/postgres_password` | PostgreSQL and gateway database access |
 | `secrets/jenkins_admin_password` | Initial Jenkins administrator login |
 | `secrets/jenkins_api_token` | Jenkins controller/orchestrator API authentication |
+| `secrets/jenkins_readonly_password` | Direct Jenkins read-only interactive login |
+| `secrets/jenkins_readonly_api_token` | Direct Jenkins read-only API authentication |
 | `secrets/api_tokens` | Hashed, scoped gateway bearer tokens |
 | `secrets/github_webhook_secret` | GitHub webhook HMAC verification |
 | `secrets/github_read_pat` | Jenkins metadata and private checkout only |
@@ -178,9 +180,10 @@ version control:
 | `secrets/review_broker_token` | Gateway-to-broker internal authentication |
 | `secrets/build_callback_secret` | Orchestrator-to-gateway completion HMAC |
 
-The bootstrap creates missing generated secrets without overwriting existing
-ones. Put the three operator-managed values into their files without printing
-them to terminal output:
+The bootstrap leaves an existing `.env` and existing non-empty secret files
+unchanged. It treats an existing empty generated-secret file as missing and
+populates it. Put the three operator-managed values into their files without
+printing them to terminal output:
 
 ```bash
 install -m 0600 /secure/input/github-read-pat secrets/github_read_pat
@@ -189,6 +192,30 @@ install -m 0600 /secure/input/openai-api-key secrets/openai_api_key
 chmod 0600 secrets/*
 stat -c '%a %U:%G %n' secrets/*
 ```
+
+For an existing deployment where the operator does not want to rerun
+`bootstrap.sh`, create only the two new reader secrets. This subshell refuses to
+write if either path already exists:
+
+```bash
+(
+  set -eu
+  umask 077
+  password_path=secrets/jenkins_readonly_password
+  token_path=secrets/jenkins_readonly_api_token
+  test ! -e "$password_path"
+  test ! -e "$token_path"
+  openssl rand -base64 32 | tr -d '\n' >"$password_path"
+  token_suffix="$(openssl rand -hex 16)"
+  printf '11%s' "$token_suffix" >"$token_path"
+  unset token_suffix
+  chmod 0600 "$password_path" "$token_path"
+)
+```
+
+No `.env` edit is required when the default `jenkins-reader` username is
+acceptable. To use a different name, add only
+`JENKINS_READONLY_USER=your-reader-name` to the existing `.env`.
 
 The `/secure/input/...` paths are placeholders for an administrator-controlled
 secret source; do not create those files in the repository. Every `stat` line
@@ -261,6 +288,24 @@ Jenkins is configured by JCasC, not through the setup wizard. Log in at
   `x-access-token`; its password is the read PAT
 - Jenkins reports
   `https://jenkins.shanewiseman.co/jenkins/` as its public URL
+
+The direct Jenkins read-only account is named by `JENKINS_READONLY_USER`
+(default `jenkins-reader`). Its interactive password is in
+`secrets/jenkins_readonly_password`, while automated clients should use
+`secrets/jenkins_readonly_api_token`. It has only `Overall/Read`,
+`Job/Discover`, `Job/Read`, and `View/Read`. Verify the API token without
+placing it on the command line:
+
+```bash
+curl --fail --user jenkins-reader \
+  'https://jenkins.shanewiseman.co/jenkins/api/json?tree=nodeName,mode'
+```
+
+Enter the value from `secrets/jenkins_readonly_api_token` at curl's password
+prompt. Jenkins requires clients to send Basic authentication preemptively and
+may return `403 Forbidden` instead of an authentication challenge. Confirm that
+GET requests for permitted job metadata succeed and that a representative
+mutation, such as a job build request, is rejected with `403 Forbidden`.
 
 Do not add the write PAT, OpenAI key, Docker client certificates, webhook
 secret, or gateway tokens to repository jobs.
@@ -500,10 +545,12 @@ For an upgrade:
 
 1. back up and record the currently deployed commit and image digests
 2. review and fetch the desired commit
-3. run `docker compose config --quiet` and the repository's validation suite
-4. build immutable images
-5. run `docker compose up -d`
-6. repeat local/public health, exposure, Jenkins-prefix, webhook, and test-PR
+3. create newly introduced secrets with either `./scripts/bootstrap.sh` or the
+   documented manual procedure
+4. run `docker compose config --quiet` and the repository's validation suite
+5. build immutable images
+6. run `docker compose up -d`
+7. repeat local/public health, exposure, Jenkins-prefix, webhook, and test-PR
    checks
 
 Never publish this proprietary repository or its images while package

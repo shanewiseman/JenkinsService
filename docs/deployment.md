@@ -23,6 +23,15 @@ token-id|read,operate|sha256-hex-digest
 The plaintext token is presented once by the bootstrap script and is never
 stored by JenkinsService.
 
+Bootstrap also creates `secrets/jenkins_readonly_password` and
+`secrets/jenkins_readonly_api_token` for the direct Jenkins user named by
+`JENKINS_READONLY_USER` (default `jenkins-reader`). This account can read
+Jenkins views, jobs, builds, logs, and artifacts, but cannot build, cancel,
+configure, create, or delete jobs. Automated clients should use the username
+and API token with Jenkins GET APIs such as `/jenkins/api/json` and
+`/jenkins/job/<job>/api/json`; the password supports an interactive read-only
+login.
+
 Validate and start:
 
 ```bash
@@ -46,6 +55,8 @@ the manifest image with that immutable repository digest, then add
 `reference-review` to `EXTENSION_ALLOWLIST`. The default empty allowlist
 prevents the unpublished example image from being executed.
 
-For upgrades, back up first, pull the reviewed commit, run Compose
+For upgrades, back up first and pull the reviewed commit. Either rerun the
+idempotent bootstrap to create missing generated secrets or follow the manual
+reader-secret procedure in `server-deployment.md`; then run Compose
 configuration and image validation, build, and use `docker compose up -d`.
 Never use a mutable extension or repository runtime image tag.
